@@ -348,6 +348,9 @@ func execInSandbox(t *testing.T, sandboxID string, cmd string, args []string) *o
 			if stderr := dataEv.GetStderr(); stderr != nil {
 				result.Stderr += string(stderr)
 			}
+			if pty := dataEv.GetPty(); pty != nil {
+				result.Stdout += string(pty)
+			}
 		}
 		if endEv := ev.GetEnd(); endEv != nil {
 			result.ExitCode = endEv.GetExitCode()
@@ -639,6 +642,9 @@ func collectStreamResult(t *testing.T, stream *connect.ServerStreamForClient[pro
 			}
 			if stderr := dataEv.GetStderr(); stderr != nil {
 				result.Stderr += string(stderr)
+			}
+			if pty := dataEv.GetPty(); pty != nil {
+				result.Stdout += string(pty)
 			}
 		}
 		if endEv := ev.GetEnd(); endEv != nil {
