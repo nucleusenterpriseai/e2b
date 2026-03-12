@@ -1,0 +1,63 @@
+# Environment files
+.env
+.env.local
+.env.*
+!.env.example
+!.env.template
+
+# OS files
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+
+# Keys and credentials
+*.pem
+*.key
+credentials*
+*.secret
+*.secrets
+
+# Log and temp files
+*.log
+*.pid
+tmp/
+temp/
+
+# Infra submodule (has its own git)
+/infra/
+
+# Binary artifacts (Go compiled binaries in specific locations)
+/tests/envd
+/tests/orchestrator-bin
+/tests/api-bin
+
+# Node
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+
+# Explicit env overrides
+.env.local
+aws/db/db

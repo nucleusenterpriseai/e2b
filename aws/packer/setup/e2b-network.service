@@ -1,0 +1,12 @@
+[Unit]
+Description=E2B Firecracker VM networking (iptables rules)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/e2b/setup-firecracker-networking.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

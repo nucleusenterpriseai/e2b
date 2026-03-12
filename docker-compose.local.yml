@@ -1,0 +1,49 @@
+# =============================================================================
+# E2B Local Development Stack (Phase 3: API + DB)
+# =============================================================================
+# Usage:
+#   docker compose -f docker-compose.local.yml up -d
+#   docker compose -f docker-compose.local.yml down
+#   docker compose -f docker-compose.local.yml down -v   # also removes data volumes
+# =============================================================================
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: e2b-postgres
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: e2b
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: e2b_local_dev
+    volumes:
+      - e2b_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d e2b"]
+      interval: 3s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    container_name: e2b-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - e2b_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  e2b_postgres_data:
+    name: e2b_postgres_data
+  e2b_redis_data:
+    name: e2b_redis_data
