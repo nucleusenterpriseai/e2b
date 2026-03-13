@@ -1,0 +1,27 @@
+FROM e2bdev/base:latest
+
+# Install Node.js 20
+RUN apt-get update -qq && \
+    apt-get install -y -qq ca-certificates curl gnupg && \
+    mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" > /etc/apt/sources.list.d/nodesource.list && \
+    apt-get update -qq && \
+    apt-get install -y -qq nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Playwright system dependencies
+RUN npx playwright install-deps chromium
+
+# Set up project directory
+RUN mkdir -p /home/user/playwright-project && \
+    cd /home/user/playwright-project && \
+    npm init -y && \
+    npm install playwright@latest
+
+# Install Chromium browser
+RUN cd /home/user/playwright-project && npx playwright install chromium
+
+# Clean up caches to save disk space
+RUN apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /root/.npm/_cacache
