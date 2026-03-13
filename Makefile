@@ -340,6 +340,21 @@ test-orchestrator: ## Run orchestrator integration tests (requires KVM host)
 	@echo "==> Running orchestrator integration tests"
 	cd $(PROJECT_ROOT)/tests/orchestrator && go test -tags integration -v -run TestOrchestrator -count=1 -timeout 300s ./...
 
+.PHONY: test-sdk
+test-sdk: ## Run SDK e2e tests (requires E2B_API_KEY and E2B_DOMAIN)
+	@echo "==> Running SDK end-to-end tests"
+	python3 -m pytest $(PROJECT_ROOT)/tests/test_sdk_e2e.py -v
+
+.PHONY: test-sdk-smoke
+test-sdk-smoke: ## Run SDK smoke test (quick, standalone script)
+	@echo "==> Running SDK smoke test"
+	python3 $(PROJECT_ROOT)/tests/test_sdk_e2e.py
+
+.PHONY: test-sdk-fast
+test-sdk-fast: ## Run SDK tests excluding slow tests
+	@echo "==> Running SDK fast tests"
+	python3 -m pytest $(PROJECT_ROOT)/tests/test_sdk_e2e.py -v -m "not slow"
+
 .PHONY: test-all
 test-all: test-unit test-api ## Run unit + API integration tests
 	@echo "==> All tests passed"

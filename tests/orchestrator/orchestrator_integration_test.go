@@ -49,7 +49,7 @@ const (
 	defaultOrchestratorAddr = "localhost:5008"
 
 	// defaultProxyAddr is the default HTTP address for the sandbox proxy.
-	defaultProxyAddr = "localhost:5007"
+	defaultProxyAddr = "127.0.0.1:5007"
 
 	// defaultTemplateID is the template used for sandbox creation in tests.
 	defaultTemplateID = "base"
@@ -296,6 +296,42 @@ func sandboxInList(sandboxes []*orchestrator.RunningSandbox, sandboxID string) b
 }
 
 // ---------------------------------------------------------------------------
+// Helper: sandbox proxy routing
+// ---------------------------------------------------------------------------
+
+// sandboxHeaderTransport injects E2b-Sandbox-Id and E2b-Sandbox-Port headers
+// into all requests, enabling header-based routing through the sandbox proxy.
+type sandboxHeaderTransport struct {
+	sandboxID string
+	port      string
+	base      http.RoundTripper
+}
+
+func (t *sandboxHeaderTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.Header.Set("E2b-Sandbox-Id", t.sandboxID)
+	req.Header.Set("E2b-Sandbox-Port", t.port)
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(req)
+}
+
+// newProcessClient returns a ProcessClient configured to route to the given sandbox
+// via header-based routing through the sandbox proxy.
+func newProcessClient(sandboxID string) processconnect.ProcessClient {
+	proxyURL := fmt.Sprintf("http://%s", proxyAddr())
+	hc := &http.Client{
+		Timeout: orchTestTimeout,
+		Transport: &sandboxHeaderTransport{
+			sandboxID: sandboxID,
+			port:      "49983",
+		},
+	}
+	return processconnect.NewProcessClient(hc, proxyURL)
+}
+
+// ---------------------------------------------------------------------------
 // Helper: exec command inside sandbox via envd proxy
 // ---------------------------------------------------------------------------
 
@@ -307,13 +343,7 @@ func execInSandbox(t *testing.T, sandboxID string, cmd string, args []string) *o
 	ctx, cancel := context.WithTimeout(context.Background(), orchTestTimeout)
 	defer cancel()
 
-	// The sandbox proxy runs on proxyAddr and routes to the correct sandbox
-	// based on the Host header or path. The URL pattern is:
-	//   http://<sandbox-id>.<proxy-host>:<proxy-port>/
-	proxyURL := fmt.Sprintf("http://49983-%s.%s", sandboxID, proxyAddr())
-
-	hc := &http.Client{Timeout: orchTestTimeout}
-	pc := processconnect.NewProcessClient(hc, proxyURL)
+	pc := newProcessClient(sandboxID)
 
 	noStdin := false
 	req := connect.NewRequest(&process.StartRequest{
@@ -323,7 +353,6 @@ func execInSandbox(t *testing.T, sandboxID string, cmd string, args []string) *o
 		},
 		Stdin: &noStdin,
 	})
-	// Set user header for envd authn
 	setUserHeader(req.Header(), "root")
 
 	stream, err := pc.Start(ctx, req)
@@ -385,9 +414,7 @@ func execInSandboxWithCwd(t *testing.T, sandboxID string, cmd string, args []str
 	ctx, cancel := context.WithTimeout(context.Background(), orchTestTimeout)
 	defer cancel()
 
-	proxyURL := fmt.Sprintf("http://49983-%s.%s", sandboxID, proxyAddr())
-	hc := &http.Client{Timeout: orchTestTimeout}
-	pc := processconnect.NewProcessClient(hc, proxyURL)
+	pc := newProcessClient(sandboxID)
 
 	noStdin := false
 	req := connect.NewRequest(&process.StartRequest{
@@ -414,9 +441,7 @@ func execInSandboxWithEnv(t *testing.T, sandboxID string, cmd string, args []str
 	ctx, cancel := context.WithTimeout(context.Background(), orchTestTimeout)
 	defer cancel()
 
-	proxyURL := fmt.Sprintf("http://49983-%s.%s", sandboxID, proxyAddr())
-	hc := &http.Client{Timeout: orchTestTimeout}
-	pc := processconnect.NewProcessClient(hc, proxyURL)
+	pc := newProcessClient(sandboxID)
 
 	noStdin := false
 	req := connect.NewRequest(&process.StartRequest{
@@ -443,9 +468,7 @@ func startProcessWithTag(t *testing.T, sandboxID string, cmd string, args []stri
 	ctx, cancel := context.WithTimeout(context.Background(), orchTestTimeout)
 	defer cancel()
 
-	proxyURL := fmt.Sprintf("http://49983-%s.%s", sandboxID, proxyAddr())
-	hc := &http.Client{Timeout: orchTestTimeout}
-	pc := processconnect.NewProcessClient(hc, proxyURL)
+	pc := newProcessClient(sandboxID)
 
 	noStdin := false
 	req := connect.NewRequest(&process.StartRequest{
@@ -484,9 +507,7 @@ func sendSignal(t *testing.T, sandboxID string, pid uint32, signal process.Signa
 	ctx, cancel := context.WithTimeout(context.Background(), orchTestTimeout)
 	defer cancel()
 
-	proxyURL := fmt.Sprintf("http://49983-%s.%s", sandboxID, proxyAddr())
-	hc := &http.Client{Timeout: orchTestTimeout}
-	pc := processconnect.NewProcessClient(hc, proxyURL)
+	pc := newProcessClient(sandboxID)
 
 	req := connect.NewRequest(&process.SendSignalRequest{
 		Process: &process.ProcessSelector{
@@ -507,9 +528,7 @@ func listProcesses(t *testing.T, sandboxID string) []*process.ProcessInfo {
 	ctx, cancel := context.WithTimeout(context.Background(), orchTestTimeout)
 	defer cancel()
 
-	proxyURL := fmt.Sprintf("http://49983-%s.%s", sandboxID, proxyAddr())
-	hc := &http.Client{Timeout: orchTestTimeout}
-	pc := processconnect.NewProcessClient(hc, proxyURL)
+	pc := newProcessClient(sandboxID)
 
 	req := connect.NewRequest(&process.ListRequest{})
 	setUserHeader(req.Header(), "root")
@@ -526,9 +545,7 @@ func execWithStdin(t *testing.T, sandboxID string, cmd string, args []string, in
 	ctx, cancel := context.WithTimeout(context.Background(), orchTestTimeout)
 	defer cancel()
 
-	proxyURL := fmt.Sprintf("http://49983-%s.%s", sandboxID, proxyAddr())
-	hc := &http.Client{Timeout: orchTestTimeout}
-	pc := processconnect.NewProcessClient(hc, proxyURL)
+	pc := newProcessClient(sandboxID)
 
 	// Start with stdin enabled (stdin=true or nil, which defaults to true).
 	stdinEnabled := true
@@ -594,9 +611,7 @@ func execWithPTY(t *testing.T, sandboxID string, cmd string, args []string) *orc
 	ctx, cancel := context.WithTimeout(context.Background(), orchTestTimeout)
 	defer cancel()
 
-	proxyURL := fmt.Sprintf("http://49983-%s.%s", sandboxID, proxyAddr())
-	hc := &http.Client{Timeout: orchTestTimeout}
-	pc := processconnect.NewProcessClient(hc, proxyURL)
+	pc := newProcessClient(sandboxID)
 
 	cols := uint32(80)
 	rows := uint32(24)
