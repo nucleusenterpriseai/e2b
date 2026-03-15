@@ -136,8 +136,29 @@ documents/                      # Design docs
 - Terraform >= 1.0
 - EC2 key pair in target region
 
+## Upstream Fork
+
+This project is built on top of [e2b-dev/infra](https://github.com/e2b-dev/infra) (Apache 2.0), forked at commit [`5c6a1de`](https://github.com/e2b-dev/infra/commit/5c6a1de19).
+
+Our fork lives at [nucleusenterpriseai/infra](https://github.com/nucleusenterpriseai/infra) (branch `feat/standard-firecracker-arm64`) and is included as a git submodule under `infra/`.
+
+**Changes from upstream:**
+- Standard Firecracker v1.12.x support (upstream uses a custom fork)
+- ARM64 (Graviton) compatibility
+- UFFD write-protect auto-detection
+- Scaling improvements (`MaxSandboxesPerNode`, `maxStartingInstances`)
+- ECR support for docker-reverse-proxy
+- Sandbox expiry loop fix
+
+To sync upstream updates:
+
+```bash
+cd infra
+git remote add upstream https://github.com/e2b-dev/infra.git  # once
+git fetch upstream && git merge upstream/main
+cd .. && git add infra && git commit -m "chore: sync upstream infra"
+```
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).
-
-Built on [e2b-dev/infra](https://github.com/e2b-dev/infra) (Apache 2.0).
