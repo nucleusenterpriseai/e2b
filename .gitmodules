@@ -1,0 +1,4 @@
+[submodule "infra"]
+	path = infra
+	url = https://github.com/nucleusenterpriseai/infra.git
+	branch = feat/standard-firecracker-arm64

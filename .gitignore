@@ -45,8 +45,7 @@ credentials*
 tmp/
 temp/
 
-# Infra submodule (has its own git)
-/infra/
+# Infra is tracked as a git submodule (see .gitmodules)
 
 # Binary artifacts (Go compiled binaries in specific locations)
 /tests/envd
