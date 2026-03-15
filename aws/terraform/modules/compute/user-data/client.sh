@@ -141,6 +141,18 @@ EOF
 
 chmod 640 /etc/nomad.d/nomad.hcl
 
+# --- E2B data directories and kernel tuning ---
+DATA_DIR="/data/e2b"
+mkdir -p $DATA_DIR/{fc-versions,kernels,orchestrator,sandbox,snapshot-cache,templates/snapshot-cache}
+
+# Load nbd kernel module (needed for disk image management)
+modprobe nbd nbds_max=1024 max_part=15 2>/dev/null || true
+echo "nbd" > /etc/modules-load.d/nbd.conf
+echo "options nbd nbds_max=1024 max_part=15" > /etc/modprobe.d/nbd.conf
+
+# Verify KVM availability (required for Firecracker)
+test -c /dev/kvm && echo "KVM: OK" || echo "WARNING: /dev/kvm not found — need bare metal instance"
+
 # --- Start Consul agent (client mode) ---
 systemctl enable consul
 systemctl start consul

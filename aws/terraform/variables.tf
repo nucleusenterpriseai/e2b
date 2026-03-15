@@ -1,7 +1,7 @@
 variable "region" {
   description = "AWS region"
   type        = string
-  default     = "us-east-1"
+  default     = "ap-southeast-1"
 }
 
 variable "environment" {
@@ -74,11 +74,11 @@ variable "client_instance_type" {
   description = "EC2 instance type for Nomad client nodes (must be bare metal for KVM/Firecracker support)"
   type        = string
   # Firecracker requires /dev/kvm, which is only available on bare metal instances
-  default = "c5.metal"
+  default = "c6g.metal"
 
   validation {
     condition     = can(regex("metal", var.client_instance_type))
-    error_message = "Client instances must be bare metal for KVM support (e.g., c5.metal, c7i.metal-24xl)."
+    error_message = "Client instances must be bare metal for KVM support (e.g., c5.metal, c6g.metal, c7g.metal)."
   }
 }
 
@@ -106,9 +106,21 @@ variable "db_multi_az" {
   default     = false
 }
 
-variable "ami_id" {
-  description = "AMI ID for E2B nodes (from Packer build)"
+variable "architecture" {
+  description = "CPU architecture for EC2 instances: x86_64 or arm64"
   type        = string
+  default     = "arm64"
+
+  validation {
+    condition     = contains(["x86_64", "arm64"], var.architecture)
+    error_message = "Architecture must be x86_64 or arm64."
+  }
+}
+
+variable "ami_name_prefix" {
+  description = "AMI name prefix (must match Packer ami_name_prefix). Architecture suffix is appended automatically."
+  type        = string
+  default     = "e2b-node"
 }
 
 variable "allowed_ssh_cidr" {

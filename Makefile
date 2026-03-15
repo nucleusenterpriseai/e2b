@@ -27,10 +27,11 @@ PACKAGES_DIR  := $(INFRA_DIR)/packages
 AWS_DIR       := $(PROJECT_ROOT)/aws
 TEMPLATES_DIR := $(PROJECT_ROOT)/templates
 
-AWS_REGION       ?= us-east-1
+AWS_REGION       ?= ap-southeast-1
 ENVIRONMENT      ?= dev
 IMAGE_TAG        ?= latest
 COMMIT_SHA       ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+ARCH             ?= arm64
 
 # ECR configuration (override with environment variables)
 AWS_ACCOUNT_ID   ?= $(shell aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "000000000000")
@@ -39,7 +40,7 @@ ECR_REPO_PREFIX  ?= e2b-orchestration
 
 # Go build settings
 GOOS             ?= linux
-GOARCH           ?= amd64
+GOARCH           ?= $(if $(filter arm64,$(ARCH)),arm64,amd64)
 CGO_ENABLED      ?= 0
 GO_LDFLAGS       := -s -w -X main.commitSHA=$(COMMIT_SHA)
 GO_BUILD         := CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) GOARCH=$(GOARCH) go build -ldflags="$(GO_LDFLAGS)"
@@ -90,7 +91,7 @@ ecr-login: ## Authenticate Docker with ECR
 .PHONY: docker-build-api
 docker-build-api: ## Build API Docker image
 	@echo "==> Building API Docker image"
-	docker build --platform linux/amd64 \
+	docker build --platform linux/$(GOARCH) \
 		-t $(ECR_REGISTRY)/$(ECR_REPO_PREFIX)/api:$(IMAGE_TAG) \
 		-t $(ECR_REGISTRY)/$(ECR_REPO_PREFIX)/api:$(COMMIT_SHA) \
 		--build-arg COMMIT_SHA=$(COMMIT_SHA) \
@@ -100,7 +101,7 @@ docker-build-api: ## Build API Docker image
 .PHONY: docker-build-client-proxy
 docker-build-client-proxy: ## Build client-proxy Docker image
 	@echo "==> Building client-proxy Docker image"
-	docker build --platform linux/amd64 \
+	docker build --platform linux/$(GOARCH) \
 		-t $(ECR_REGISTRY)/$(ECR_REPO_PREFIX)/client-proxy:$(IMAGE_TAG) \
 		-t $(ECR_REGISTRY)/$(ECR_REPO_PREFIX)/client-proxy:$(COMMIT_SHA) \
 		--build-arg COMMIT_SHA=$(COMMIT_SHA) \
@@ -110,7 +111,7 @@ docker-build-client-proxy: ## Build client-proxy Docker image
 .PHONY: docker-build-docker-reverse-proxy
 docker-build-docker-reverse-proxy: ## Build docker-reverse-proxy Docker image
 	@echo "==> Building docker-reverse-proxy Docker image"
-	docker build --platform linux/amd64 \
+	docker build --platform linux/$(GOARCH) \
 		-t $(ECR_REGISTRY)/$(ECR_REPO_PREFIX)/docker-reverse-proxy:$(IMAGE_TAG) \
 		-t $(ECR_REGISTRY)/$(ECR_REPO_PREFIX)/docker-reverse-proxy:$(COMMIT_SHA) \
 		--build-arg COMMIT_SHA=$(COMMIT_SHA) \
@@ -147,10 +148,11 @@ packer-validate: packer-init ## Validate Packer template
 	cd $(AWS_DIR)/packer && packer validate .
 
 .PHONY: packer
-packer: packer-init ## Build AMI with Packer
-	@echo "==> Building AMI with Packer"
+packer: packer-init ## Build AMI with Packer (ARCH=arm64 or x86_64)
+	@echo "==> Building AMI with Packer (arch=$(ARCH), region=$(AWS_REGION))"
 	cd $(AWS_DIR)/packer && packer build \
 		-var "region=$(AWS_REGION)" \
+		-var "architecture=$(ARCH)" \
 		.
 
 # ============================================================================
@@ -158,34 +160,34 @@ packer: packer-init ## Build AMI with Packer
 # ============================================================================
 
 .PHONY: terraform-init
-terraform-init: ## Initialize Terraform
+terraform-init: ## Initialize Terraform (single-node)
 	@echo "==> Initializing Terraform"
-	cd $(AWS_DIR)/terraform && terraform init
+	cd $(AWS_DIR)/terraform/single-node && terraform init
 
 .PHONY: terraform-validate
 terraform-validate: ## Validate Terraform configuration
 	@echo "==> Validating Terraform"
-	cd $(AWS_DIR)/terraform && terraform validate
+	cd $(AWS_DIR)/terraform/single-node && terraform validate
 
 .PHONY: terraform-plan
 terraform-plan: ## Plan Terraform changes
 	@echo "==> Planning Terraform changes"
-	cd $(AWS_DIR)/terraform && terraform plan -out=tfplan
+	cd $(AWS_DIR)/terraform/single-node && terraform plan -out=tfplan
 
 .PHONY: terraform-apply
 terraform-apply: ## Apply Terraform changes
 	@echo "==> Applying Terraform changes"
-	cd $(AWS_DIR)/terraform && terraform apply tfplan
+	cd $(AWS_DIR)/terraform/single-node && terraform apply tfplan
 
 .PHONY: terraform-destroy
 terraform-destroy: ## Destroy Terraform infrastructure (DANGEROUS)
 	@echo "WARNING: This will destroy all infrastructure!"
 	@read -p "Type 'yes' to confirm: " confirm && [ "$$confirm" = "yes" ]
-	cd $(AWS_DIR)/terraform && terraform destroy
+	cd $(AWS_DIR)/terraform/single-node && terraform destroy
 
 .PHONY: terraform-output
 terraform-output: ## Show Terraform outputs
-	cd $(AWS_DIR)/terraform && terraform output
+	cd $(AWS_DIR)/terraform/single-node && terraform output
 
 .PHONY: bootstrap-init
 bootstrap-init: ## Initialize Terraform state backend (S3 + DynamoDB)
@@ -250,7 +252,7 @@ nomad-logs-orchestrator: ## Tail orchestrator service logs
 .PHONY: template-base
 template-base: ## Build base template Docker image
 	@echo "==> Building base template"
-	docker build --platform linux/amd64 \
+	docker build --platform linux/$(GOARCH) \
 		-t $(ECR_REGISTRY)/e2b-templates:base \
 		-f $(TEMPLATES_DIR)/base.Dockerfile \
 		$(TEMPLATES_DIR)
@@ -258,7 +260,7 @@ template-base: ## Build base template Docker image
 .PHONY: template-code-interpreter
 template-code-interpreter: ## Build code-interpreter template Docker image
 	@echo "==> Building code-interpreter template"
-	docker build --platform linux/amd64 \
+	docker build --platform linux/$(GOARCH) \
 		-t $(ECR_REGISTRY)/e2b-templates:code-interpreter \
 		-f $(TEMPLATES_DIR)/code-interpreter.Dockerfile \
 		$(TEMPLATES_DIR)
@@ -266,7 +268,7 @@ template-code-interpreter: ## Build code-interpreter template Docker image
 .PHONY: template-desktop
 template-desktop: ## Build desktop template Docker image
 	@echo "==> Building desktop template"
-	docker build --platform linux/amd64 \
+	docker build --platform linux/$(GOARCH) \
 		-t $(ECR_REGISTRY)/e2b-templates:desktop \
 		-f $(TEMPLATES_DIR)/desktop.Dockerfile \
 		$(TEMPLATES_DIR)
@@ -274,7 +276,7 @@ template-desktop: ## Build desktop template Docker image
 .PHONY: template-browser-use
 template-browser-use: ## Build browser-use template Docker image
 	@echo "==> Building browser-use template"
-	docker build --platform linux/amd64 \
+	docker build --platform linux/$(GOARCH) \
 		-t $(ECR_REGISTRY)/e2b-templates:browser-use \
 		-f $(TEMPLATES_DIR)/browser-use.Dockerfile \
 		$(TEMPLATES_DIR)

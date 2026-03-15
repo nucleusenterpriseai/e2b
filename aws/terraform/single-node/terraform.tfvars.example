@@ -1,0 +1,20 @@
+region        = "ap-southeast-1"
+environment   = "dev"
+key_name      = "your-ec2-keypair"
+instance_type = "c6g.metal"       # must be bare-metal for KVM
+use_spot      = true
+volume_size   = 200
+
+# Pre-built AMI (skip full setup, boots in ~1 min)
+# Set to "" to build from scratch (~15 min)
+ami_override = ""
+
+# Firecracker + kernel versions
+fc_version     = "v1.12.1"
+fc_commit      = "a41d3fb"
+kernel_version = "vmlinux-6.1.158"
+go_version     = "1.25.4"
+
+# Your fork with ec2-setup.sh (optional, for fresh builds)
+# infra_repo_url = "https://github.com/your-org/e2b.git"
+# infra_repo_ref = "main"

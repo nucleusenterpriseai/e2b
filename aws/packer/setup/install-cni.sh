@@ -6,7 +6,20 @@ set -euo pipefail
 
 CNI_VERSION="1.4.1"
 CNI_DIR="/opt/cni/bin"
-ARCH="amd64"
+
+# Auto-detect architecture from Packer env var or uname
+if [ -n "${TARGET_ARCH:-}" ]; then
+  case "$TARGET_ARCH" in
+    arm64|aarch64) ARCH="arm64" ;;
+    x86_64|amd64)  ARCH="amd64" ;;
+    *) echo "ERROR: unsupported TARGET_ARCH=$TARGET_ARCH"; exit 1 ;;
+  esac
+else
+  case "$(uname -m)" in
+    aarch64) ARCH="arm64" ;;
+    *)       ARCH="amd64" ;;
+  esac
+fi
 
 echo "==> Installing CNI plugins v${CNI_VERSION}"
 

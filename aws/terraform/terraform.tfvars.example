@@ -4,7 +4,7 @@
 # -------------------------------------------------------
 
 # AWS region to deploy into
-region = "us-east-1"
+region = "ap-southeast-1"
 
 # Environment name (used in resource naming)
 environment = "dev"
@@ -18,15 +18,20 @@ vpc_cidr = "10.0.0.0/16"
 # EC2 key pair name (must exist in the target region)
 key_name = "my-keypair"
 
-# AMI ID built by Packer with Consul, Nomad, Docker, Firecracker pre-installed
-ami_id = "ami-0123456789abcdef0"
+# CPU architecture: "arm64" (Graviton) or "x86_64" (Intel/AMD)
+# Must match the Packer-built AMI architecture
+architecture = "arm64"
+
+# AMI name prefix (auto-lookup: finds latest Packer-built AMI matching this prefix + architecture)
+# No manual ami_id needed — Terraform finds it automatically
+ami_name_prefix = "e2b-node"
 
 # CIDR block allowed to SSH to bastion (restrict to your office/VPN IP)
 # REQUIRED - no default for security reasons
 allowed_ssh_cidr = "203.0.113.0/24"
 
 # Database
-db_username      = "e2badmin"
+db_username       = "e2badmin"
 db_instance_class = "db.t3.medium"
 db_multi_az       = false    # Set true for production
 
@@ -34,16 +39,16 @@ db_multi_az       = false    # Set true for production
 redis_node_type = "cache.t3.medium"
 
 # Compute - Nomad/Consul servers
-server_instance_type = "t3.xlarge"
+server_instance_type = "t3.xlarge"     # x86_64: t3.xlarge | arm64: t4g.xlarge
 server_count         = 3
 
 # Compute - API nodes
-api_instance_type = "t3.xlarge"
+api_instance_type = "t3.xlarge"        # x86_64: t3.xlarge | arm64: t4g.xlarge
 api_count         = 1
 
 # Compute - Client nodes (Firecracker hosts)
 # MUST be bare metal instance type for KVM support
-client_instance_type = "c5.metal"
+client_instance_type = "c6g.metal"     # arm64: c6g.metal | x86_64: c5.metal
 client_desired_count = 1
-client_max_count     = 5
+client_max_count     = 5               # Auto-scaling ceiling
 client_min_count     = 1

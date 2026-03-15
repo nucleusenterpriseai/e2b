@@ -9,12 +9,18 @@ packer {
 
 variable "region" {
   type    = string
-  default = "us-east-1"
+  default = "ap-southeast-1"
 }
 
-variable "instance_type" {
-  type    = string
-  default = "t3.large"
+variable "architecture" {
+  description = "Target CPU architecture: x86_64 or arm64"
+  type        = string
+  default     = "arm64"
+
+  validation {
+    condition     = contains(["x86_64", "arm64"], var.architecture)
+    error_message = "Architecture must be x86_64 or arm64."
+  }
 }
 
 variable "ami_name_prefix" {
@@ -24,17 +30,23 @@ variable "ami_name_prefix" {
 
 variable "volume_size" {
   type    = number
-  default = 100
+  default = 200
+}
+
+locals {
+  ami_arch     = var.architecture == "arm64" ? "arm64" : "amd64"
+  aws_cli_arch = var.architecture == "arm64" ? "aarch64" : "x86_64"
+  build_type   = var.architecture == "arm64" ? "c6g.large" : "t3.large"
 }
 
 source "amazon-ebs" "e2b" {
-  ami_name      = "${var.ami_name_prefix}-{{timestamp}}"
-  instance_type = var.instance_type
+  ami_name      = "${var.ami_name_prefix}-${local.ami_arch}-{{timestamp}}"
+  instance_type = local.build_type
   region        = var.region
 
   source_ami_filter {
     filters = {
-      name                = "ubuntu/images/*ubuntu-jammy-22.04-amd64-server-*"
+      name                = "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-${local.ami_arch}-server-*"
       root-device-type    = "ebs"
       virtualization-type = "hvm"
     }
@@ -48,15 +60,16 @@ source "amazon-ebs" "e2b" {
     device_name           = "/dev/sda1"
     volume_size           = var.volume_size
     volume_type           = "gp3"
-    iops                  = 3000
-    throughput            = 125
+    iops                  = 6000
+    throughput            = 400
     delete_on_termination = true
   }
 
   tags = {
-    Name    = "${var.ami_name_prefix}-{{timestamp}}"
-    Builder = "packer"
-    Project = "e2b"
+    Name         = "${var.ami_name_prefix}-${local.ami_arch}-{{timestamp}}"
+    Builder      = "packer"
+    Project      = "e2b"
+    Architecture = var.architecture
   }
 }
 
@@ -75,9 +88,12 @@ build {
 
   # Install AWS CLI v2
   provisioner "shell" {
+    environment_vars = [
+      "AWS_CLI_ARCH=${local.aws_cli_arch}",
+    ]
     inline = [
-      "echo '==> Installing AWS CLI v2'",
-      "curl -fsSL 'https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip' -o /tmp/awscliv2.zip",
+      "echo '==> Installing AWS CLI v2 ($AWS_CLI_ARCH)'",
+      "curl -fsSL \"https://awscli.amazonaws.com/awscli-exe-linux-$${AWS_CLI_ARCH}.zip\" -o /tmp/awscliv2.zip",
       "unzip -q /tmp/awscliv2.zip -d /tmp",
       "sudo /tmp/aws/install",
       "rm -rf /tmp/aws /tmp/awscliv2.zip",
@@ -103,11 +119,17 @@ build {
   # Install Firecracker + Jailer
   provisioner "shell" {
     script = "setup/install-firecracker.sh"
+    environment_vars = [
+      "TARGET_ARCH=${var.architecture}",
+    ]
   }
 
   # Install CNI plugins
   provisioner "shell" {
     script = "setup/install-cni.sh"
+    environment_vars = [
+      "TARGET_ARCH=${var.architecture}",
+    ]
   }
 
   # System tuning

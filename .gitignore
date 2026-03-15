@@ -29,6 +29,8 @@
 *.tfstate.backup
 .terraform/
 .terraform.lock.hcl
+tfplan
+terraform.tfvars
 
 # Keys and credentials
 *.pem

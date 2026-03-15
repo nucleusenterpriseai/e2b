@@ -1,5 +1,5 @@
 # E2B Desktop Template
-# Ubuntu 22.04 with XFCE desktop, VNC, and browser
+# Extends e2bdev/base with XFCE desktop, VNC, and browser
 #
 # Provides a full graphical desktop environment accessible via VNC/noVNC.
 # Used for browser automation, GUI testing, and visual tasks.
@@ -7,12 +7,13 @@
 # Ports:
 #   5900 - VNC (x11vnc)
 #   6080 - noVNC (websocket proxy for browser access)
+#
+# Build: docker build -f templates/desktop.Dockerfile -t desktop:latest .
+# The template build pipeline uses create-build with -from-image pointing here.
 
-FROM ubuntu:22.04
+FROM e2bdev/base:latest
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
 
 # Install desktop environment and VNC
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -30,10 +31,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     websockify \
     # Browser
     firefox-esr \
-    # Office suite (lightweight)
-    libreoffice-calc \
-    libreoffice-writer \
-    libreoffice-impress \
     # Screen capture and automation
     xdotool \
     scrot \
@@ -43,71 +40,50 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-noto-cjk \
     fonts-liberation \
     fonts-dejavu-core \
-    fonts-ubuntu \
+    fonts-freefont-ttf \
     # D-Bus (required for XFCE)
     dbus-x11 \
     at-spi2-core \
-    # Development tools
-    python3 \
-    python3-pip \
-    curl \
-    wget \
-    git \
-    sudo \
-    ca-certificates \
     # Utilities
     file \
     xclip \
     && rm -rf /var/lib/apt/lists/*
 
-# Create desktop startup script
-RUN cat > /usr/local/bin/start-desktop.sh <<'STARTUP' && chmod +x /usr/local/bin/start-desktop.sh
-#!/bin/bash
-set -e
+# Create desktop startup script using printf (heredocs don't work in Docker RUN)
+RUN printf '%s\n' \
+    '#!/bin/bash' \
+    'set -e' \
+    '' \
+    'export DISPLAY=:99' \
+    'export RESOLUTION="${RESOLUTION:-1920x1080x24}"' \
+    '' \
+    'echo "Starting Xvfb on display ${DISPLAY} with resolution ${RESOLUTION}"' \
+    'Xvfb ${DISPLAY} -screen 0 ${RESOLUTION} -ac +extension GLX +render -noreset &' \
+    'XVFB_PID=$!' \
+    'sleep 2' \
+    '' \
+    'eval $(dbus-launch --sh-syntax)' \
+    'export DBUS_SESSION_BUS_ADDRESS' \
+    '' \
+    'echo "Starting XFCE desktop"' \
+    'startxfce4 &' \
+    'sleep 3' \
+    '' \
+    'echo "Starting x11vnc on port 5900"' \
+    'x11vnc -display ${DISPLAY} -forever -nopw -listen 0.0.0.0 -rfbport 5900 -shared &' \
+    'X11VNC_PID=$!' \
+    '' \
+    'echo "Starting noVNC on port 6080"' \
+    'websockify --web /usr/share/novnc 6080 localhost:5900 &' \
+    'NOVNC_PID=$!' \
+    '' \
+    'echo "Desktop environment ready"' \
+    'echo "  VNC: port 5900"' \
+    'echo "  noVNC: port 6080"' \
+    '' \
+    'wait -n ${XVFB_PID} ${X11VNC_PID} ${NOVNC_PID}' \
+    > /usr/local/bin/start-desktop.sh \
+    && chmod +x /usr/local/bin/start-desktop.sh
 
-# Configure display
-export DISPLAY=:99
-export RESOLUTION="${RESOLUTION:-1920x1080x24}"
-
-# Start Xvfb (virtual framebuffer)
-echo "Starting Xvfb on display ${DISPLAY} with resolution ${RESOLUTION}"
-Xvfb ${DISPLAY} -screen 0 ${RESOLUTION} -ac +extension GLX +render -noreset &
-XVFB_PID=$!
-sleep 2
-
-# Start D-Bus session
-eval $(dbus-launch --sh-syntax)
-export DBUS_SESSION_BUS_ADDRESS
-
-# Start XFCE desktop
-echo "Starting XFCE desktop"
-startxfce4 &
-sleep 3
-
-# Start VNC server (no password, listen on all interfaces)
-echo "Starting x11vnc on port 5900"
-x11vnc -display ${DISPLAY} -forever -nopw -listen 0.0.0.0 -rfbport 5900 -shared &
-X11VNC_PID=$!
-
-# Start noVNC websocket proxy
-echo "Starting noVNC on port 6080"
-websockify --web /usr/share/novnc 6080 localhost:5900 &
-NOVNC_PID=$!
-
-echo "Desktop environment ready"
-echo "  VNC: port 5900"
-echo "  noVNC: port 6080"
-
-# Wait for any process to exit
-wait -n ${XVFB_PID} ${X11VNC_PID} ${NOVNC_PID}
-STARTUP
-
-# Create default user with passwordless sudo
-RUN useradd -m -s /bin/bash user \
-    && echo "user ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-
-USER user
-WORKDIR /home/user
-
-# Set display for user session
+# Set display for all sessions
 ENV DISPLAY=:99

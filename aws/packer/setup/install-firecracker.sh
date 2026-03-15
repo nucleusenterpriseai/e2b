@@ -2,10 +2,20 @@
 set -euo pipefail
 
 # Install Firecracker and Jailer from official GitHub releases
-# Pinned to Firecracker v1.7.0
+# Supports both x86_64 and aarch64 (ARM64/Graviton)
 
-FIRECRACKER_VERSION="1.7.0"
-ARCH="x86_64"
+FIRECRACKER_VERSION="${FIRECRACKER_VERSION:-1.12.1}"
+
+# Auto-detect architecture from Packer env var or uname
+if [ -n "${TARGET_ARCH:-}" ]; then
+  case "$TARGET_ARCH" in
+    arm64|aarch64) ARCH="aarch64" ;;
+    x86_64|amd64)  ARCH="x86_64"  ;;
+    *) echo "ERROR: unsupported TARGET_ARCH=$TARGET_ARCH"; exit 1 ;;
+  esac
+else
+  ARCH=$(uname -m)
+fi
 
 echo "==> Installing Firecracker v${FIRECRACKER_VERSION}"
 

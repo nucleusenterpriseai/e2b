@@ -3,8 +3,30 @@ data "aws_availability_zones" "available" {
 }
 
 locals {
-  az1 = data.aws_availability_zones.available.names[0]
-  az2 = data.aws_availability_zones.available.names[1]
+  az1              = data.aws_availability_zones.available.names[0]
+  az2              = data.aws_availability_zones.available.names[1]
+  ami_arch_suffix  = var.architecture == "arm64" ? "arm64" : "amd64"
+}
+
+# Auto-lookup latest Packer-built AMI (no manual ami_id needed)
+data "aws_ami" "e2b_node" {
+  most_recent = true
+  owners      = ["self"]
+
+  filter {
+    name   = "name"
+    values = ["${var.ami_name_prefix}-${local.ami_arch_suffix}-*"]
+  }
+
+  filter {
+    name   = "state"
+    values = ["available"]
+  }
+
+  filter {
+    name   = "tag:Project"
+    values = ["e2b"]
+  }
 }
 
 module "vpc" {
@@ -76,7 +98,7 @@ module "compute" {
   instance_profile_name = module.security.instance_profile_name
   ec2_role_name         = module.security.ec2_role_name
   key_name              = var.key_name
-  ami_id                = var.ami_id
+  ami_id                = data.aws_ami.e2b_node.id
 
   server_instance_type = var.server_instance_type
   server_count         = var.server_count

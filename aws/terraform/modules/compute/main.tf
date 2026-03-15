@@ -1,5 +1,10 @@
 data "aws_region" "current" {}
 
+locals {
+  # Use ARM64-compatible bastion when client is Graviton
+  bastion_instance_type = can(regex("^(c6g|c7g|t4g|m6g|r6g|m7g|r7g)", var.client_instance_type)) ? "t4g.small" : "t3.small"
+}
+
 # ---------------------------------------------------------
 # IAM Policy for EC2 Role (S3, ECR, Secrets Manager, SSM, CW)
 # ---------------------------------------------------------
@@ -122,7 +127,7 @@ resource "aws_iam_role_policy" "ec2" {
 # ---------------------------------------------------------
 resource "aws_instance" "bastion" {
   ami                    = var.ami_id
-  instance_type          = "t3.small"
+  instance_type          = local.bastion_instance_type
   key_name               = var.key_name
   subnet_id              = var.public_subnets[0]
   vpc_security_group_ids = [var.bastion_sg_id]
