@@ -96,6 +96,12 @@ variable "e2b_repo_url" {
   default     = ""
 }
 
+variable "e2b_repo_ref" {
+  description = "Git branch/tag/commit of the e2b repo to clone (default: repo's default branch)"
+  type        = string
+  default     = ""
+}
+
 variable "fc_version" {
   description = "Firecracker version"
   type        = string
@@ -248,6 +254,7 @@ resource "aws_instance" "e2b" {
     kernel_version = var.kernel_version
     go_version     = var.go_version
     e2b_repo_url   = var.e2b_repo_url
+    e2b_repo_ref   = var.e2b_repo_ref
     infra_repo_url = var.infra_repo_url
     infra_repo_ref = var.infra_repo_ref
   }))

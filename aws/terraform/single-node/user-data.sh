@@ -77,7 +77,11 @@ chown -R ubuntu:ubuntu "$E2B_HOME"
 
 %{ if e2b_repo_url != "" }
 # Clone the user's e2b repo (has ec2-setup.sh, templates, and custom configs)
+%{ if e2b_repo_ref != "" }
+git clone --depth 1 --branch "${e2b_repo_ref}" "${e2b_repo_url}" "$E2B_HOME/custom" 2>/dev/null || true
+%{ else }
 git clone --depth 1 "${e2b_repo_url}" "$E2B_HOME/custom" 2>/dev/null || true
+%{ endif }
 if [ -f "$E2B_HOME/custom/aws/terraform/single-node/ec2-setup.sh" ]; then
     cp "$E2B_HOME/custom/aws/terraform/single-node/ec2-setup.sh" /opt/e2b/ec2-setup.sh
 fi
