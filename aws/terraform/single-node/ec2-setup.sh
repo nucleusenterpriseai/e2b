@@ -341,20 +341,20 @@ ON CONFLICT (env_id, alias) DO NOTHING;
 # ── 11. Write Service Configs + Start Services ─────────────────────────
 log "Step 11/12: Starting E2B services..."
 
-# Kill any existing services
-pkill -f "/usr/local/bin/orchestrator" 2>/dev/null || true
-pkill -f "/usr/local/bin/e2b-api" 2>/dev/null || true
-sleep 2
+# Stop any existing services
+systemctl stop e2b-orchestrator 2>/dev/null || true
+systemctl stop e2b-api 2>/dev/null || true
 
 # Clean network state from previous runs
 for ns in $(ip netns list 2>/dev/null | awk '{print $1}'); do
     ip netns delete "$ns" 2>/dev/null || true
 done
-iptables -t nat -F POSTROUTING 2>/dev/null || true
-iptables -F FORWARD 2>/dev/null || true
-# Restore Docker's iptables rules (flushing removes MASQUERADE for containers)
-systemctl restart docker 2>/dev/null || true
-sleep 3
+# Flush only E2B-specific iptables chains (preserves Docker and system rules)
+iptables -F E2B-FORWARD 2>/dev/null || true
+iptables -t nat -F E2B-POSTROUTING 2>/dev/null || true
+
+# Restore E2B network rules
+/opt/e2b/setup-firecracker-networking.sh 2>/dev/null || true
 
 # Write orchestrator env file
 cat > /opt/e2b/orchestrator.env <<EOF
@@ -405,24 +405,68 @@ EOF
 
 chmod 600 /opt/e2b/orchestrator.env /opt/e2b/api.env
 
+# Install systemd unit files
+cp "$E2B_HOME/aws/packer/setup/e2b-orchestrator.service" /etc/systemd/system/ 2>/dev/null || \
+cat > /etc/systemd/system/e2b-orchestrator.service <<'UNIT'
+[Unit]
+Description=E2B Orchestrator — Firecracker VM orchestration
+After=network-online.target docker.service e2b-network.service
+Wants=network-online.target
+Requires=docker.service
+[Service]
+Type=simple
+EnvironmentFile=/opt/e2b/orchestrator.env
+ExecStart=/usr/local/bin/orchestrator
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/orchestrator.log
+StandardError=append:/var/log/orchestrator.log
+LimitNOFILE=65536
+LimitNPROC=65536
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+cp "$E2B_HOME/aws/packer/setup/e2b-api.service" /etc/systemd/system/ 2>/dev/null || \
+cat > /etc/systemd/system/e2b-api.service <<'UNIT'
+[Unit]
+Description=E2B API Server — REST API for sandbox management
+After=network-online.target docker.service e2b-orchestrator.service
+Wants=network-online.target
+Requires=docker.service
+[Service]
+Type=simple
+EnvironmentFile=/opt/e2b/api.env
+ExecStart=/usr/local/bin/e2b-api
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/api.log
+StandardError=append:/var/log/api.log
+LimitNOFILE=65536
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+
 # Start orchestrator
 log "  Starting orchestrator..."
-bash -c 'set -a; source /opt/e2b/orchestrator.env; set +a; nohup /usr/local/bin/orchestrator > /var/log/orchestrator.log 2>&1 &'
+systemctl enable --now e2b-orchestrator
 sleep 3
-if pgrep -f "/usr/local/bin/orchestrator" >/dev/null; then
-    log "  Orchestrator started (PID $(pgrep -f /usr/local/bin/orchestrator))"
+if systemctl is-active --quiet e2b-orchestrator; then
+    log "  Orchestrator started (PID $(systemctl show -p MainPID --value e2b-orchestrator))"
 else
-    log "  WARNING: Orchestrator may not have started. Check /var/log/orchestrator.log"
+    log "  WARNING: Orchestrator may not have started. Check: journalctl -u e2b-orchestrator"
 fi
 
 # Start API
 log "  Starting API..."
-bash -c 'set -a; source /opt/e2b/api.env; set +a; nohup /usr/local/bin/e2b-api > /var/log/api.log 2>&1 &'
+systemctl enable --now e2b-api
 sleep 5
-if pgrep -f "/usr/local/bin/e2b-api" >/dev/null; then
-    log "  API started (PID $(pgrep -f /usr/local/bin/e2b-api))"
+if systemctl is-active --quiet e2b-api; then
+    log "  API started (PID $(systemctl show -p MainPID --value e2b-api))"
 else
-    log "  WARNING: API may not have started. Check /var/log/api.log"
+    log "  WARNING: API may not have started. Check: journalctl -u e2b-api"
 fi
 
 # Wait for API health
@@ -524,30 +568,18 @@ fi
 cat > /opt/e2b/restart-services.sh <<'RESTART'
 #!/bin/bash
 set -e
-# Kill existing services (SIGKILL to ensure clean port release)
-pkill -9 -f "/usr/local/bin/orchestrator" 2>/dev/null || true
-pkill -9 -f "/usr/local/bin/e2b-api" 2>/dev/null || true
-sleep 3
-# Wait for ports to be free
-for i in $(seq 1 10); do
-    ss -tlnp | grep -qE ':5007|:5008' || break
-    sleep 1
-done
 # Clean network state
 for ns in $(ip netns list 2>/dev/null | awk '{print $1}'); do
     ip netns delete "$ns" 2>/dev/null || true
 done
-iptables -t nat -F POSTROUTING 2>/dev/null || true
-iptables -F FORWARD 2>/dev/null || true
-# Restore Docker's iptables rules (flushing removes MASQUERADE for containers)
-systemctl restart docker 2>/dev/null || true
-sleep 3
-# Start orchestrator
-bash -c 'set -a; source /opt/e2b/orchestrator.env; set +a; nohup /usr/local/bin/orchestrator > /var/log/orchestrator.log 2>&1 &'
+# Flush only E2B-specific iptables chains (preserves Docker and system rules)
+iptables -F E2B-FORWARD 2>/dev/null || true
+iptables -t nat -F E2B-POSTROUTING 2>/dev/null || true
+# Restart E2B services via systemd
+systemctl restart e2b-orchestrator
 echo "Orchestrator started"
 sleep 5
-# Start API
-bash -c 'set -a; source /opt/e2b/api.env; set +a; nohup /usr/local/bin/e2b-api > /var/log/api.log 2>&1 &'
+systemctl restart e2b-api
 echo "API started"
 sleep 5
 curl -sf http://localhost:80/health && echo " Health: OK" || echo " Health: NOT READY"

@@ -173,34 +173,39 @@ if [ -d "$E2B_DIR/packages/db/migrations" ]; then
   }
 fi
 
-# Seed data
+# Seed data — use the canonical seed.sql from aws/db/ if available, otherwise
+# fall back to inline SQL that matches the canonical team/tier IDs.
 echo "Seeding data..."
+SEED_SQL_FILE="$SCRIPT_DIR/../aws/db/seed.sql"
+if [ -f "$SEED_SQL_FILE" ]; then
+  echo "  Using canonical seed file: $SEED_SQL_FILE"
+  docker exec -i e2b-postgres psql -U e2b -d e2b < "$SEED_SQL_FILE"
+else
+  echo "  seed.sql not found, using inline seed..."
+fi
+
+# Always ensure tier, team, and base template exist (idempotent).
+# Uses the canonical team ID '00000000-0000-0000-0000-000000000001' from seed.sql.
 docker exec e2b-postgres psql -U e2b -d e2b <<'SEED_SQL'
 -- Tier
 INSERT INTO tiers (id, name, disk_mb, concurrent_instances, max_length_hours, max_vcpu, max_ram_mb, concurrent_template_builds)
-VALUES ('base_v1', 'Base tier', 512, 2000, 1, 8, 8192, 20)
-ON CONFLICT (id) DO UPDATE SET concurrent_instances = 2000;
-
--- Team
-INSERT INTO teams (id, name, is_blocked, tier, email, is_banned, slug)
-VALUES ('a0000000-0000-0000-0000-000000000001', 'Self-Hosted Team', false, 'base_v1', 'admin@self-hosted.local', false, 'self-hosted')
+VALUES ('base_v1', 'Base', 512, 500, 24, 8, 8192, 20)
 ON CONFLICT (id) DO NOTHING;
 
--- API Key (e2b_0123456789abcdef0123456789abcdef01234567 — SHA-256 hashed)
-INSERT INTO team_api_keys (id, team_id, api_key_hash, api_key_prefix, api_key_length, api_key_mask_prefix, api_key_mask_suffix, name)
-VALUES (
-  '0c2e67d2-abe4-4630-ac18-8270eb8e4f0d',
-  'a0000000-0000-0000-0000-000000000001',
-  '$sha256$fnTOdbXy+JJAszr/8kHiCfmPe4kgrxtXKVfIsDBDDXo',
-  'e2b_01234', 46, 'e2b_0', '34567',
-  'Unnamed API Key'
-) ON CONFLICT (id) DO NOTHING;
+-- Team (canonical ID matches aws/db/seed.sql)
+INSERT INTO teams (id, name, tier, email, slug)
+VALUES ('00000000-0000-0000-0000-000000000001', 'self-hosted', 'base_v1', 'admin@e2b.local', 'self-hosted')
+ON CONFLICT (id) DO NOTHING;
 
 -- Base template
 INSERT INTO envs (id, team_id, public, build_count, source)
-VALUES ('base', 'a0000000-0000-0000-0000-000000000001', true, 1, 'template')
+VALUES ('base', '00000000-0000-0000-0000-000000000001', true, 1, 'template')
 ON CONFLICT (id) DO NOTHING;
 SEED_SQL
+
+echo ""
+echo "  NOTE: Use 'cd aws/db && go run generate_api_key.go' to generate an API key."
+echo "        Do NOT hard-code API key hashes in setup scripts."
 
 echo "Phase 6 done."
 
@@ -238,7 +243,85 @@ if ! pgrep -x nomad > /dev/null; then
   sleep 3
 fi
 
-# Write restart script
+# Install systemd unit files for E2B services
+mkdir -p /opt/e2b
+
+E2B_DIR="${E2B_HOME:-/home/ubuntu/e2b}"
+DATA_DIR="/data/e2b"
+
+# Write orchestrator env file
+cat > /opt/e2b/orchestrator.env <<ENV_EOF
+ENVIRONMENT=local
+NODE_ID=local
+SANDBOX_DIR=$DATA_DIR/sandbox
+LOCAL_TEMPLATE_STORAGE_BASE_PATH=$DATA_DIR/templates
+STORAGE_PROVIDER=Local
+TEMPLATE_BUCKET_NAME=unused
+BUILD_CACHE_BUCKET_NAME=unused
+DOCKER_REGISTRY=localhost:5000
+FIRECRACKER_VERSIONS_DIR=$DATA_DIR/fc-versions
+KERNEL_VERSIONS_DIR=$DATA_DIR/kernels
+ENV_EOF
+
+# Write API env file
+cat > /opt/e2b/api.env <<ENV_EOF
+ENVIRONMENT=local
+NODE_ID=local
+POSTGRES_CONNECTION_STRING=postgresql://e2b:e2b_local@localhost:5432/e2b?sslmode=disable
+REDIS_URL=localhost:6379
+ORCHESTRATOR_PORT=5008
+PORT=80
+API_SECRET=test-secret
+TEMPLATE_MANAGER_ADDRESS=localhost:5009
+SANDBOX_ACCESS_TOKEN_HASH_SEED=test-seed-key-for-dev-12345678
+ENV_EOF
+chmod 600 /opt/e2b/orchestrator.env /opt/e2b/api.env
+
+# Install systemd units (use repo copies if available, else inline)
+if [ -f "$SCRIPT_DIR/../aws/packer/setup/e2b-orchestrator.service" ]; then
+  cp "$SCRIPT_DIR/../aws/packer/setup/e2b-orchestrator.service" /etc/systemd/system/
+  cp "$SCRIPT_DIR/../aws/packer/setup/e2b-api.service" /etc/systemd/system/
+else
+  cat > /etc/systemd/system/e2b-orchestrator.service <<'UNIT'
+[Unit]
+Description=E2B Orchestrator
+After=network-online.target docker.service e2b-network.service
+Requires=docker.service
+[Service]
+Type=simple
+EnvironmentFile=/opt/e2b/orchestrator.env
+ExecStart=/usr/local/go/bin/go run .
+WorkingDirectory=/home/ubuntu/e2b/packages/orchestrator
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/orchestrator.log
+StandardError=append:/var/log/orchestrator.log
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+  cat > /etc/systemd/system/e2b-api.service <<'UNIT'
+[Unit]
+Description=E2B API Server
+After=network-online.target docker.service e2b-orchestrator.service
+Requires=docker.service
+[Service]
+Type=simple
+EnvironmentFile=/opt/e2b/api.env
+ExecStart=/usr/local/go/bin/go run .
+WorkingDirectory=/home/ubuntu/e2b/packages/api
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/api.log
+StandardError=append:/var/log/api.log
+[Install]
+WantedBy=multi-user.target
+UNIT
+fi
+
+systemctl daemon-reload
+
+# Write restart convenience script (uses systemd)
 cat > /opt/e2b/restart-services.sh <<'SERVICES_EOF'
 #!/bin/bash
 set -e
@@ -250,49 +333,23 @@ done
 for veth in $(ip link show | grep 'veth-' | awk -F': ' '{print $2}' | cut -d'@' -f1); do
     ip link delete $veth 2>/dev/null || true
 done
-iptables -t nat -F POSTROUTING 2>/dev/null || true
-iptables -F FORWARD 2>/dev/null || true
+# Flush only E2B-specific iptables chains (preserves Docker and system rules)
+iptables -F E2B-FORWARD 2>/dev/null || true
+iptables -t nat -F E2B-POSTROUTING 2>/dev/null || true
 
-E2B_DIR="${E2B_HOME:-/home/ubuntu/e2b}"
-DATA_DIR="/data/e2b"
+# Restart E2B network rules
+/opt/e2b/setup-firecracker-networking.sh 2>/dev/null || true
 
-# Start orchestrator
-cd "$E2B_DIR/packages/orchestrator"
-ENVIRONMENT=local \
-NODE_ID=local \
-SANDBOX_DIR=$DATA_DIR/sandbox \
-SANDBOX_FIREWALL_ENABLED=false \
-LOCAL_TEMPLATE_STORAGE_BASE_PATH=$DATA_DIR/templates \
-STORAGE_PROVIDER=Local \
-TEMPLATE_BUCKET_NAME=unused \
-BUILD_CACHE_BUCKET_NAME=unused \
-DOCKER_REGISTRY=localhost:5000 \
-FIRECRACKER_VERSIONS_DIR=$DATA_DIR/fc-versions \
-KERNEL_VERSIONS_DIR=$DATA_DIR/kernels \
-nohup /usr/local/go/bin/go run . > /var/log/orchestrator.log 2>&1 &
-echo "Orchestrator PID: $!"
-
+# Restart services via systemd
+systemctl restart e2b-orchestrator
+echo "Orchestrator started"
 sleep 5
-
-# Start API
-cd "$E2B_DIR/packages/api"
-ENVIRONMENT=local \
-NODE_ID=local \
-POSTGRES_CONNECTION_STRING="postgresql://e2b:e2b_local@localhost:5432/e2b?sslmode=disable" \
-REDIS_URL=localhost:6379 \
-ORCHESTRATOR_PORT=5008 \
-PORT=80 \
-API_SECRET=test-secret \
-TEMPLATE_MANAGER_ADDRESS=localhost:5009 \
-SANDBOX_ACCESS_TOKEN_HASH_SEED=test-seed-key-for-dev-12345678 \
-nohup /usr/local/go/bin/go run . > /var/log/api.log 2>&1 &
-echo "API PID: $!"
-
+systemctl restart e2b-api
+echo "API started"
 sleep 15
 curl -s http://localhost:80/health && echo " OK" || echo " NOT READY"
 SERVICES_EOF
 chmod +x /opt/e2b/restart-services.sh
-mkdir -p /opt/e2b
 
 # Start services
 bash /opt/e2b/restart-services.sh
@@ -312,12 +369,12 @@ echo "  PostgreSQL:   :5432 (Docker)"
 echo "  Redis:        :6379 (Docker)"
 echo "  Nomad:        :4646 (dev mode)"
 echo ""
-echo "API Key: e2b_0123456789abcdef0123456789abcdef01234567"
+echo "API Key: Generate with 'cd aws/db && go run generate_api_key.go'"
 echo ""
-echo "Test:"
+echo "Test (replace <YOUR_API_KEY> with output from generate_api_key.go):"
 echo "  python3 -c '"
 echo "  import os"
-echo "  os.environ[\"E2B_API_KEY\"]=\"e2b_0123456789abcdef0123456789abcdef01234567\""
+echo "  os.environ[\"E2B_API_KEY\"]=\"<YOUR_API_KEY>\""
 echo "  os.environ[\"E2B_API_URL\"]=\"http://localhost:80\""
 echo "  os.environ[\"E2B_SANDBOX_URL\"]=\"http://localhost:5007\""
 echo "  from e2b import Sandbox"
