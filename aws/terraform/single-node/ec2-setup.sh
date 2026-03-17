@@ -323,6 +323,10 @@ if ! command -v goose &>/dev/null; then
 fi
 export PATH="/root/go/bin:$PATH"
 
+# Create postgres role (needed by Supabase auth migration)
+PGPASSWORD=$DB_PASS psql -h localhost -U $DB_USER -d $DB_NAME -c \
+    "CREATE ROLE postgres WITH LOGIN SUPERUSER PASSWORD 'postgres';" 2>/dev/null || true
+
 MIGRATIONS_DIR="$INFRA_DIR/packages/db/migrations"
 log "  Running goose migrations from $MIGRATIONS_DIR..."
 goose -dir "$MIGRATIONS_DIR" postgres "$DB_URL" up
