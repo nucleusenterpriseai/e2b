@@ -247,6 +247,10 @@ if grep -q 'envd-init-request-timeout-milliseconds", 50' "$FEATURE_FLAGS" 2>/dev
     sed -i 's/envd-init-request-timeout-milliseconds", 50/envd-init-request-timeout-milliseconds", 2000/' "$FEATURE_FLAGS"
 fi
 
+# Fetch arch-correct busybox for the embedded init binary (x86-64 in repo, need aarch64 on ARM)
+log "  Fetching arch-correct busybox..."
+bash "$INFRA_DIR/scripts/fetch-busybox.sh"
+
 # Build orchestrator
 log "  Building orchestrator..."
 cd "$INFRA_DIR/packages/orchestrator"
