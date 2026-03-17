@@ -78,13 +78,17 @@ chown -R ubuntu:ubuntu "$E2B_HOME"
 %{ if e2b_repo_url != "" }
 # Clone the user's e2b repo (has ec2-setup.sh, templates, and custom configs)
 %{ if e2b_repo_ref != "" }
-git clone --depth 1 --branch "${e2b_repo_ref}" "${e2b_repo_url}" "$E2B_HOME/custom" 2>/dev/null || true
+echo "Cloning e2b repo: ${e2b_repo_url} (ref: ${e2b_repo_ref})"
+git clone --depth 1 --branch "${e2b_repo_ref}" "${e2b_repo_url}" "$E2B_HOME/custom"
 %{ else }
-git clone --depth 1 "${e2b_repo_url}" "$E2B_HOME/custom" 2>/dev/null || true
+echo "Cloning e2b repo: ${e2b_repo_url} (default branch)"
+git clone --depth 1 "${e2b_repo_url}" "$E2B_HOME/custom"
 %{ endif }
-if [ -f "$E2B_HOME/custom/aws/terraform/single-node/ec2-setup.sh" ]; then
-    cp "$E2B_HOME/custom/aws/terraform/single-node/ec2-setup.sh" /opt/e2b/ec2-setup.sh
+if [ ! -f "$E2B_HOME/custom/aws/terraform/single-node/ec2-setup.sh" ]; then
+    echo "FATAL: ec2-setup.sh not found in cloned e2b repo"
+    exit 1
 fi
+cp "$E2B_HOME/custom/aws/terraform/single-node/ec2-setup.sh" /opt/e2b/ec2-setup.sh
 if [ -f "$E2B_HOME/custom/aws/db/generate_api_key.go" ]; then
     mkdir -p "$E2B_HOME/aws/db"
     cp "$E2B_HOME/custom/aws/db/generate_api_key.go" "$E2B_HOME/aws/db/"
@@ -105,8 +109,8 @@ if [ -f /opt/e2b/ec2-setup.sh ]; then
     chmod +x /opt/e2b/ec2-setup.sh
     bash /opt/e2b/ec2-setup.sh
 else
-    echo "ec2-setup.sh not found at /opt/e2b/ec2-setup.sh"
-    echo "Copy it manually or set e2b_repo_url in terraform.tfvars"
+    echo "FATAL: ec2-setup.sh not found at /opt/e2b/ec2-setup.sh — set e2b_repo_url in terraform.tfvars"
+    exit 1
 fi
 
 echo "=== User data complete — $(date) ==="

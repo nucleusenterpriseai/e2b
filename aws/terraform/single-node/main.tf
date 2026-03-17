@@ -97,7 +97,7 @@ variable "e2b_repo_url" {
 }
 
 variable "e2b_repo_ref" {
-  description = "Git branch/tag/commit of the e2b repo to clone (default: repo's default branch)"
+  description = "Git branch or tag of the e2b repo to clone (commit SHAs are not supported; use a branch)"
   type        = string
   default     = ""
 }
@@ -259,7 +259,7 @@ resource "aws_instance" "e2b" {
     infra_repo_ref = var.infra_repo_ref
   }))
 
-  user_data_replace_on_change = false
+  user_data_replace_on_change = true
 
   tags = {
     Name = "e2b-${var.environment}-node"

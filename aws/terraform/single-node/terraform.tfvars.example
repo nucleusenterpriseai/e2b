@@ -15,6 +15,10 @@ fc_commit      = "a41d3fb"
 kernel_version = "vmlinux-6.1.158"
 go_version     = "1.25.4"
 
-# Your fork with ec2-setup.sh (optional, for fresh builds)
-# infra_repo_url = "https://github.com/your-org/e2b.git"
+# Your e2b project repo (has ec2-setup.sh, templates, custom configs)
+# e2b_repo_url = "https://github.com/your-org/e2b.git"
+# e2b_repo_ref = "main"    # branch or tag only (commit SHAs not supported)
+
+# Your infra repo fork (has orchestrator, API, envd source)
+# infra_repo_url = "https://github.com/your-org/infra.git"
 # infra_repo_ref = "main"
