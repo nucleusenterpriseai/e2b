@@ -294,19 +294,19 @@ KERNEL_DIR="$DATA_DIR/kernels/$KERNEL_VERSION"
 KERNEL_TEMPLATE_DIR="$DATA_DIR/templates/kernels/$KERNEL_VERSION"
 mkdir -p "$KERNEL_DIR" "$KERNEL_TEMPLATE_DIR"
 
-if [ ! -f "$KERNEL_DIR/vmlinux.bin" ]; then
+if [ ! -f "$KERNEL_DIR/vmlinux.bin" ] || [ ! -s "$KERNEL_DIR/vmlinux.bin" ]; then
+    rm -f "$KERNEL_DIR/vmlinux.bin"  # remove 0-byte stale files
     log "  Downloading kernel $KERNEL_VERSION for $FC_ARCH..."
-    # Try e2b's kernel download; the kernel naming depends on the project
     KERNEL_URL="https://github.com/e2b-dev/firecracker-kernels/releases/download/${KERNEL_VERSION}/vmlinux-${FC_ARCH}.bin"
-    if wget -q --spider "$KERNEL_URL" 2>/dev/null; then
-        wget -q "$KERNEL_URL" -O "$KERNEL_DIR/vmlinux.bin"
-    else
-        # Fallback: download from e2b's public storage
+    wget -q "$KERNEL_URL" -O "$KERNEL_DIR/vmlinux.bin" 2>/dev/null || {
         log "  Trying alternative kernel source..."
         KERNEL_URL="https://github.com/e2b-dev/firecracker-kernels/releases/latest/download/vmlinux-${FC_ARCH}.bin"
-        wget -q "$KERNEL_URL" -O "$KERNEL_DIR/vmlinux.bin" || {
-            log "  WARNING: Could not download kernel. You must manually place vmlinux.bin in $KERNEL_DIR/"
-        }
+        wget -q "$KERNEL_URL" -O "$KERNEL_DIR/vmlinux.bin" 2>/dev/null || true
+    }
+    # Validate — wget -O creates 0-byte files on 404
+    if [ ! -s "$KERNEL_DIR/vmlinux.bin" ]; then
+        rm -f "$KERNEL_DIR/vmlinux.bin"
+        log "  WARNING: Could not download kernel. You must manually place vmlinux.bin in $KERNEL_DIR/"
     fi
 fi
 if [ ! -f "$KERNEL_TEMPLATE_DIR/vmlinux.bin" ]; then
