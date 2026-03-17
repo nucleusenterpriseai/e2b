@@ -1,0 +1,21 @@
+[Unit]
+Description=E2B Orchestrator — Firecracker VM orchestration
+After=network-online.target docker.service e2b-network.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+EnvironmentFile=/opt/e2b/orchestrator.env
+ExecStart=/usr/local/bin/orchestrator
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/orchestrator.log
+StandardError=append:/var/log/orchestrator.log
+
+# Hardening
+LimitNOFILE=65536
+LimitNPROC=65536
+
+[Install]
+WantedBy=multi-user.target

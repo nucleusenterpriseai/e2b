@@ -118,6 +118,57 @@ else
     log "  WARNING: /dev/kvm not found — Firecracker will not work"
 fi
 
+# Install Firecracker networking helper + systemd unit.
+# On AMI-based instances this is done by packer (system-tuning.sh), but the
+# stock-Ubuntu full-setup path needs it installed here.
+log "  Installing E2B networking helper..."
+mkdir -p /opt/e2b
+NETWORKING_SRC="$E2B_HOME/aws/packer/setup/setup-firecracker-networking.sh"
+NETWORKING_SVC="$E2B_HOME/aws/packer/setup/e2b-network.service"
+if [ -f "$NETWORKING_SRC" ]; then
+    install -m 0755 "$NETWORKING_SRC" /opt/e2b/setup-firecracker-networking.sh
+else
+    # Inline fallback
+    cat > /opt/e2b/setup-firecracker-networking.sh <<'NETSCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+FC_SUBNET="10.11.0.0/16"
+DEFAULT_IF=$(ip route show default | awk '{print $5}' | head -1)
+[ -z "$DEFAULT_IF" ] && { echo "e2b-network: no default route" | logger -t e2b-network; exit 1; }
+iptables -N E2B-FORWARD 2>/dev/null || true
+iptables -t nat -N E2B-POSTROUTING 2>/dev/null || true
+iptables -F E2B-FORWARD
+iptables -t nat -F E2B-POSTROUTING
+iptables -C FORWARD -j E2B-FORWARD 2>/dev/null || iptables -I FORWARD 1 -j E2B-FORWARD
+iptables -t nat -C POSTROUTING -j E2B-POSTROUTING 2>/dev/null || iptables -t nat -I POSTROUTING 1 -j E2B-POSTROUTING
+iptables -A E2B-FORWARD -s "$FC_SUBNET" -j ACCEPT
+iptables -A E2B-FORWARD -d "$FC_SUBNET" -j ACCEPT
+iptables -t nat -A E2B-POSTROUTING -s "$FC_SUBNET" -o "$DEFAULT_IF" -j MASQUERADE
+echo "e2b-network: rules applied (subnet=$FC_SUBNET, iface=$DEFAULT_IF)" | logger -t e2b-network
+NETSCRIPT
+    chmod +x /opt/e2b/setup-firecracker-networking.sh
+fi
+if [ -f "$NETWORKING_SVC" ]; then
+    install -m 0644 "$NETWORKING_SVC" /etc/systemd/system/e2b-network.service
+else
+    cat > /etc/systemd/system/e2b-network.service <<'NETSVC'
+[Unit]
+Description=E2B Firecracker VM networking (iptables rules)
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/opt/e2b/setup-firecracker-networking.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+NETSVC
+fi
+systemctl daemon-reload
+systemctl enable e2b-network.service
+/opt/e2b/setup-firecracker-networking.sh
+log "  E2B networking helper installed and active"
+
 # ── 7. Docker Services (PostgreSQL, Redis, Registry) ───────────────────
 log "Step 7/12: Starting Docker services..."
 
@@ -341,20 +392,35 @@ ON CONFLICT (env_id, alias) DO NOTHING;
 # ── 11. Write Service Configs + Start Services ─────────────────────────
 log "Step 11/12: Starting E2B services..."
 
-# Kill any existing services
-pkill -f "/usr/local/bin/orchestrator" 2>/dev/null || true
-pkill -f "/usr/local/bin/e2b-api" 2>/dev/null || true
-sleep 2
+# Stop any existing services
+systemctl stop e2b-orchestrator 2>/dev/null || true
+systemctl stop e2b-api 2>/dev/null || true
 
-# Clean network state from previous runs
+# Clean all E2B network state from previous runs
 for ns in $(ip netns list 2>/dev/null | awk '{print $1}'); do
     ip netns delete "$ns" 2>/dev/null || true
 done
-iptables -t nat -F POSTROUTING 2>/dev/null || true
-iptables -F FORWARD 2>/dev/null || true
-# Restore Docker's iptables rules (flushing removes MASQUERADE for containers)
-systemctl restart docker 2>/dev/null || true
-sleep 3
+for veth in $(ip link show 2>/dev/null | grep 'veth-' | awk -F': ' '{print $2}' | cut -d'@' -f1); do
+    ip link delete "$veth" 2>/dev/null || true
+done
+# Purge stale per-sandbox iptables rules from built-in chains.
+# FORWARD and PREROUTING rules reference veth-* interfaces.
+# POSTROUTING MASQUERADE rules use -s 10.11.0.X/32 (no veth token),
+# so we match the sandbox subnet separately.
+FC_HOST_SUBNET="${SANDBOXES_HOST_NETWORK_CIDR:-10.11.0.0/16}"
+FC_HOST_PREFIX=$(echo "$FC_HOST_SUBNET" | cut -d'.' -f1-2)  # e.g. "10.11"
+for chain_spec in "filter FORWARD veth-" "nat PREROUTING veth-" "nat POSTROUTING veth-" "nat POSTROUTING ${FC_HOST_PREFIX}."; do
+    table=$(echo "$chain_spec" | awk '{print $1}')
+    chain=$(echo "$chain_spec" | awk '{print $2}')
+    pattern=$(echo "$chain_spec" | awk '{print $3}')
+    iptables -t "$table" -S "$chain" 2>/dev/null | grep -n "$pattern" | sort -t: -k1 -rn | while IFS=: read -r _ rule; do
+        iptables -t "$table" $(echo "$rule" | sed "s/^-A/-D/") 2>/dev/null || true
+    done
+done
+# Flush E2B static chains and repopulate
+iptables -F E2B-FORWARD 2>/dev/null || true
+iptables -t nat -F E2B-POSTROUTING 2>/dev/null || true
+/opt/e2b/setup-firecracker-networking.sh 2>/dev/null || true
 
 # Write orchestrator env file
 cat > /opt/e2b/orchestrator.env <<EOF
@@ -405,24 +471,68 @@ EOF
 
 chmod 600 /opt/e2b/orchestrator.env /opt/e2b/api.env
 
+# Install systemd unit files
+cp "$E2B_HOME/aws/packer/setup/e2b-orchestrator.service" /etc/systemd/system/ 2>/dev/null || \
+cat > /etc/systemd/system/e2b-orchestrator.service <<'UNIT'
+[Unit]
+Description=E2B Orchestrator — Firecracker VM orchestration
+After=network-online.target docker.service e2b-network.service
+Wants=network-online.target
+Requires=docker.service
+[Service]
+Type=simple
+EnvironmentFile=/opt/e2b/orchestrator.env
+ExecStart=/usr/local/bin/orchestrator
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/orchestrator.log
+StandardError=append:/var/log/orchestrator.log
+LimitNOFILE=65536
+LimitNPROC=65536
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+cp "$E2B_HOME/aws/packer/setup/e2b-api.service" /etc/systemd/system/ 2>/dev/null || \
+cat > /etc/systemd/system/e2b-api.service <<'UNIT'
+[Unit]
+Description=E2B API Server — REST API for sandbox management
+After=network-online.target docker.service e2b-orchestrator.service
+Wants=network-online.target
+Requires=docker.service
+[Service]
+Type=simple
+EnvironmentFile=/opt/e2b/api.env
+ExecStart=/usr/local/bin/e2b-api
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/api.log
+StandardError=append:/var/log/api.log
+LimitNOFILE=65536
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+
 # Start orchestrator
 log "  Starting orchestrator..."
-bash -c 'set -a; source /opt/e2b/orchestrator.env; set +a; nohup /usr/local/bin/orchestrator > /var/log/orchestrator.log 2>&1 &'
+systemctl enable --now e2b-orchestrator
 sleep 3
-if pgrep -f "/usr/local/bin/orchestrator" >/dev/null; then
-    log "  Orchestrator started (PID $(pgrep -f /usr/local/bin/orchestrator))"
+if systemctl is-active --quiet e2b-orchestrator; then
+    log "  Orchestrator started (PID $(systemctl show -p MainPID --value e2b-orchestrator))"
 else
-    log "  WARNING: Orchestrator may not have started. Check /var/log/orchestrator.log"
+    log "  WARNING: Orchestrator may not have started. Check: journalctl -u e2b-orchestrator"
 fi
 
 # Start API
 log "  Starting API..."
-bash -c 'set -a; source /opt/e2b/api.env; set +a; nohup /usr/local/bin/e2b-api > /var/log/api.log 2>&1 &'
+systemctl enable --now e2b-api
 sleep 5
-if pgrep -f "/usr/local/bin/e2b-api" >/dev/null; then
-    log "  API started (PID $(pgrep -f /usr/local/bin/e2b-api))"
+if systemctl is-active --quiet e2b-api; then
+    log "  API started (PID $(systemctl show -p MainPID --value e2b-api))"
 else
-    log "  WARNING: API may not have started. Check /var/log/api.log"
+    log "  WARNING: API may not have started. Check: journalctl -u e2b-api"
 fi
 
 # Wait for API health
@@ -524,30 +634,39 @@ fi
 cat > /opt/e2b/restart-services.sh <<'RESTART'
 #!/bin/bash
 set -e
-# Kill existing services (SIGKILL to ensure clean port release)
-pkill -9 -f "/usr/local/bin/orchestrator" 2>/dev/null || true
-pkill -9 -f "/usr/local/bin/e2b-api" 2>/dev/null || true
-sleep 3
-# Wait for ports to be free
-for i in $(seq 1 10); do
-    ss -tlnp | grep -qE ':5007|:5008' || break
-    sleep 1
-done
-# Clean network state
+
+# --- Clean all E2B network state ---
+# Delete sandbox namespaces
 for ns in $(ip netns list 2>/dev/null | awk '{print $1}'); do
     ip netns delete "$ns" 2>/dev/null || true
 done
-iptables -t nat -F POSTROUTING 2>/dev/null || true
-iptables -F FORWARD 2>/dev/null || true
-# Restore Docker's iptables rules (flushing removes MASQUERADE for containers)
-systemctl restart docker 2>/dev/null || true
-sleep 3
-# Start orchestrator
-bash -c 'set -a; source /opt/e2b/orchestrator.env; set +a; nohup /usr/local/bin/orchestrator > /var/log/orchestrator.log 2>&1 &'
+# Delete sandbox veth devices
+for veth in $(ip link show 2>/dev/null | grep 'veth-' | awk -F': ' '{print $2}' | cut -d'@' -f1); do
+    ip link delete "$veth" 2>/dev/null || true
+done
+# Purge stale per-sandbox iptables rules from built-in chains.
+# FORWARD/PREROUTING rules reference veth-*; POSTROUTING MASQUERADE rules
+# use -s 10.11.0.X/32 (sandbox host subnet, no veth token).
+FC_HOST_PREFIX="10.11"  # first two octets of default sandbox host subnet
+for chain_spec in "filter FORWARD veth-" "nat PREROUTING veth-" "nat POSTROUTING veth-" "nat POSTROUTING ${FC_HOST_PREFIX}."; do
+    table=$(echo "$chain_spec" | awk '{print $1}')
+    chain=$(echo "$chain_spec" | awk '{print $2}')
+    pattern=$(echo "$chain_spec" | awk '{print $3}')
+    iptables -t "$table" -S "$chain" 2>/dev/null | grep -n "$pattern" | sort -t: -k1 -rn | while IFS=: read -r _ rule; do
+        iptables -t "$table" $(echo "$rule" | sed "s/^-A/-D/") 2>/dev/null || true
+    done
+done
+
+# Flush E2B static chains and repopulate them
+iptables -F E2B-FORWARD 2>/dev/null || true
+iptables -t nat -F E2B-POSTROUTING 2>/dev/null || true
+/opt/e2b/setup-firecracker-networking.sh
+
+# Restart E2B services via systemd
+systemctl restart e2b-orchestrator
 echo "Orchestrator started"
 sleep 5
-# Start API
-bash -c 'set -a; source /opt/e2b/api.env; set +a; nohup /usr/local/bin/e2b-api > /var/log/api.log 2>&1 &'
+systemctl restart e2b-api
 echo "API started"
 sleep 5
 curl -sf http://localhost:80/health && echo " Health: OK" || echo " Health: NOT READY"
