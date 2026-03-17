@@ -398,25 +398,21 @@ log "  envd version: $ENVD_VERSION"
 # Seed base template env entry
 log "  Seeding base template in DB..."
 PGPASSWORD=$DB_PASS psql -h localhost -U $DB_USER -d $DB_NAME -c "
-INSERT INTO envs (id, team_id, public, build_count, source)
-VALUES ('base', '00000000-0000-0000-0000-000000000001', true, 1, 'template')
+INSERT INTO envs (id, team_id, public, build_count, source, updated_at)
+VALUES ('base', '00000000-0000-0000-0000-000000000001', true, 1, 'template', now())
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO env_builds (id, env_id, status, status_group, dockerfile, start_cmd, vcpu, ram_mb, free_disk_size_mb, total_disk_size_mb, kernel_version, firecracker_version, envd_version)
+INSERT INTO env_builds (id, env_id, status, status_group, dockerfile, start_cmd, vcpu, ram_mb, free_disk_size_mb, total_disk_size_mb, kernel_version, firecracker_version, envd_version, updated_at)
 VALUES (
-  'bb000000-0000-0000-0000-000000000001', 'base', 'uploaded', 'ready',
+  'bb000000-0000-0000-0000-000000000001', 'base', 'building', 'building',
   'FROM e2bdev/base:latest', '', 2, 512, 512, 512,
-  '$KERNEL_VERSION', '${FC_VERSION}_${FC_COMMIT}', '$ENVD_VERSION'
-) ON CONFLICT (id) DO NOTHING;
-
-INSERT INTO env_build_assignments (env_id, build_id, tag)
-VALUES ('base', 'bb000000-0000-0000-0000-000000000001', 'default')
-ON CONFLICT (env_id, tag) DO UPDATE SET build_id = EXCLUDED.build_id;
+  '$KERNEL_VERSION', '${FC_VERSION}_${FC_COMMIT}', '$ENVD_VERSION', now()
+) ON CONFLICT (id) DO UPDATE SET status='building', status_group='building', updated_at=now();
 
 INSERT INTO env_aliases (env_id, alias, namespace)
 VALUES ('base', 'base', NULL)
-ON CONFLICT (env_id, alias) DO NOTHING;
-" 2>/dev/null || true
+ON CONFLICT (alias, namespace) DO NOTHING;
+"
 
 # ── 11. Write Service Configs + Start Services ─────────────────────────
 log "Step 11/12: Starting E2B services..."
@@ -605,16 +601,26 @@ docker tag e2bdev/base:latest "base:${BASE_BUILD_ID}"
 
 # Run create-build for base
 log "  Building base template..."
-bash -c "set -a; source /opt/e2b/orchestrator.env; set +a; \
+if bash -c "set -a; source /opt/e2b/orchestrator.env; set +a; \
     /usr/local/bin/create-build \
     -template base \
     -to-build ${BASE_BUILD_ID} \
     -memory 512 -disk 512 -vcpu 2 \
     -kernel $KERNEL_VERSION \
     -firecracker ${FC_VERSION}_${FC_COMMIT} \
-    -v" 2>&1 | tail -20 || {
-    log "  WARNING: Base template build may have failed. Check output above."
-}
+    -v" 2>&1 | tail -20; then
+    log "  Base template build succeeded — marking as ready and updating assignment"
+    PGPASSWORD=$DB_PASS psql -h localhost -U $DB_USER -d $DB_NAME -c "
+        UPDATE env_builds SET status='uploaded', status_group='ready', updated_at=now() WHERE id='${BASE_BUILD_ID}';
+        DELETE FROM env_build_assignments WHERE env_id = 'base' AND tag = 'default';
+        INSERT INTO env_build_assignments (env_id, build_id, tag) VALUES ('base', '${BASE_BUILD_ID}', 'default');
+    "
+else
+    log "  FATAL: Base template build failed — marking as failed"
+    PGPASSWORD=$DB_PASS psql -h localhost -U $DB_USER -d $DB_NAME -c \
+        "UPDATE env_builds SET status='failed', status_group='error', updated_at=now() WHERE id='${BASE_BUILD_ID}';"
+    exit 1
+fi
 
 # ── 13. Build Desktop Template (optional) ────────────────────────────
 log "Step 13/13: Building desktop template..."
@@ -630,38 +636,43 @@ if [ -f "$DESKTOP_DOCKERFILE" ]; then
     # Seed desktop template in DB
     log "  Seeding desktop template in DB..."
     PGPASSWORD=$DB_PASS psql -h localhost -U $DB_USER -d $DB_NAME -c "
-    INSERT INTO envs (id, team_id, public, build_count, source)
-    VALUES ('desktop', '00000000-0000-0000-0000-000000000001', true, 1, 'template')
+    INSERT INTO envs (id, team_id, public, build_count, source, updated_at)
+    VALUES ('desktop', '00000000-0000-0000-0000-000000000001', true, 1, 'template', now())
     ON CONFLICT (id) DO NOTHING;
 
-    INSERT INTO env_builds (id, env_id, status, status_group, dockerfile, start_cmd, vcpu, ram_mb, free_disk_size_mb, total_disk_size_mb, kernel_version, firecracker_version, envd_version)
+    INSERT INTO env_builds (id, env_id, status, status_group, dockerfile, start_cmd, vcpu, ram_mb, free_disk_size_mb, total_disk_size_mb, kernel_version, firecracker_version, envd_version, updated_at)
     VALUES (
-      '${DESKTOP_BUILD_ID}', 'desktop', 'uploaded', 'ready',
+      '${DESKTOP_BUILD_ID}', 'desktop', 'building', 'building',
       '', '', 2, 512, 7168, 7168,
-      '$KERNEL_VERSION', '${FC_VERSION}_${FC_COMMIT}', '$ENVD_VERSION'
-    ) ON CONFLICT (id) DO NOTHING;
-
-    INSERT INTO env_build_assignments (env_id, build_id, tag)
-    VALUES ('desktop', '${DESKTOP_BUILD_ID}', 'default')
-    ON CONFLICT (env_id, tag) DO UPDATE SET build_id = EXCLUDED.build_id;
+      '$KERNEL_VERSION', '${FC_VERSION}_${FC_COMMIT}', '$ENVD_VERSION', now()
+    ) ON CONFLICT (id) DO UPDATE SET status='building', status_group='building', updated_at=now();
 
     INSERT INTO env_aliases (env_id, alias, namespace)
     VALUES ('desktop', 'desktop', NULL)
-    ON CONFLICT (env_id, alias) DO NOTHING;
-    " 2>/dev/null || true
+    ON CONFLICT (alias, namespace) DO NOTHING;
+    "
 
     # Run create-build for desktop
     log "  Running create-build for desktop template..."
-    bash -c "set -a; source /opt/e2b/orchestrator.env; set +a; \
+    if bash -c "set -a; source /opt/e2b/orchestrator.env; set +a; \
         /usr/local/bin/create-build \
         -template desktop \
         -to-build ${DESKTOP_BUILD_ID} \
         -memory 512 -disk 7168 -vcpu 2 \
         -kernel $KERNEL_VERSION \
         -firecracker ${FC_VERSION}_${FC_COMMIT} \
-        -v" 2>&1 | tail -20 || {
-        log "  WARNING: Desktop template build may have failed. Check output above."
-    }
+        -v" 2>&1 | tail -20; then
+        log "  Desktop template build succeeded — marking as ready and updating assignment"
+        PGPASSWORD=$DB_PASS psql -h localhost -U $DB_USER -d $DB_NAME -c "
+            UPDATE env_builds SET status='uploaded', status_group='ready', updated_at=now() WHERE id='${DESKTOP_BUILD_ID}';
+            DELETE FROM env_build_assignments WHERE env_id = 'desktop' AND tag = 'default';
+            INSERT INTO env_build_assignments (env_id, build_id, tag) VALUES ('desktop', '${DESKTOP_BUILD_ID}', 'default');
+        "
+    else
+        log "  WARNING: Desktop template build failed — marking as failed"
+        PGPASSWORD=$DB_PASS psql -h localhost -U $DB_USER -d $DB_NAME -c \
+            "UPDATE env_builds SET status='failed', status_group='error', updated_at=now() WHERE id='${DESKTOP_BUILD_ID}';"
+    fi
 else
     log "  Skipping desktop template (no Dockerfile found at $DESKTOP_DOCKERFILE)"
 fi
