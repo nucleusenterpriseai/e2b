@@ -345,15 +345,24 @@ log "Step 11/12: Starting E2B services..."
 systemctl stop e2b-orchestrator 2>/dev/null || true
 systemctl stop e2b-api 2>/dev/null || true
 
-# Clean network state from previous runs
+# Clean all E2B network state from previous runs
 for ns in $(ip netns list 2>/dev/null | awk '{print $1}'); do
     ip netns delete "$ns" 2>/dev/null || true
 done
-# Flush only E2B-specific iptables chains (preserves Docker and system rules)
+for veth in $(ip link show 2>/dev/null | grep 'veth-' | awk -F': ' '{print $2}' | cut -d'@' -f1); do
+    ip link delete "$veth" 2>/dev/null || true
+done
+# Purge stale per-sandbox rules from built-in chains (rules referencing dead veth-* interfaces)
+for chain_spec in "filter FORWARD" "nat POSTROUTING" "nat PREROUTING"; do
+    table=$(echo "$chain_spec" | awk '{print $1}')
+    chain=$(echo "$chain_spec" | awk '{print $2}')
+    iptables -t "$table" -S "$chain" 2>/dev/null | grep -n 'veth-' | sort -t: -k1 -rn | while IFS=: read -r _ rule; do
+        iptables -t "$table" $(echo "$rule" | sed "s/^-A/-D/") 2>/dev/null || true
+    done
+done
+# Flush E2B static chains and repopulate
 iptables -F E2B-FORWARD 2>/dev/null || true
 iptables -t nat -F E2B-POSTROUTING 2>/dev/null || true
-
-# Restore E2B network rules
 /opt/e2b/setup-firecracker-networking.sh 2>/dev/null || true
 
 # Write orchestrator env file
@@ -568,13 +577,32 @@ fi
 cat > /opt/e2b/restart-services.sh <<'RESTART'
 #!/bin/bash
 set -e
-# Clean network state
+
+# --- Clean all E2B network state ---
+# Delete sandbox namespaces
 for ns in $(ip netns list 2>/dev/null | awk '{print $1}'); do
     ip netns delete "$ns" 2>/dev/null || true
 done
-# Flush only E2B-specific iptables chains (preserves Docker and system rules)
+# Delete sandbox veth devices
+for veth in $(ip link show 2>/dev/null | grep 'veth-' | awk -F': ' '{print $2}' | cut -d'@' -f1); do
+    ip link delete "$veth" 2>/dev/null || true
+done
+# Purge stale per-sandbox rules from built-in chains (rules referencing dead veth-* interfaces)
+for chain_spec in "filter FORWARD" "nat POSTROUTING" "nat PREROUTING"; do
+    table=$(echo "$chain_spec" | awk '{print $1}')
+    chain=$(echo "$chain_spec" | awk '{print $2}')
+    # List rules, find veth-* references, delete in reverse order to preserve indices
+    iptables -t "$table" -S "$chain" 2>/dev/null | grep -n 'veth-' | sort -t: -k1 -rn | while IFS=: read -r _ rule; do
+        # Convert -A to -D for deletion
+        iptables -t "$table" $(echo "$rule" | sed "s/^-A/-D/") 2>/dev/null || true
+    done
+done
+
+# Flush E2B static chains and repopulate them
 iptables -F E2B-FORWARD 2>/dev/null || true
 iptables -t nat -F E2B-POSTROUTING 2>/dev/null || true
+/opt/e2b/setup-firecracker-networking.sh
+
 # Restart E2B services via systemd
 systemctl restart e2b-orchestrator
 echo "Orchestrator started"

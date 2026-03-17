@@ -277,21 +277,22 @@ SANDBOX_ACCESS_TOKEN_HASH_SEED=test-seed-key-for-dev-12345678
 ENV_EOF
 chmod 600 /opt/e2b/orchestrator.env /opt/e2b/api.env
 
-# Install systemd units (use repo copies if available, else inline)
-if [ -f "$SCRIPT_DIR/../aws/packer/setup/e2b-orchestrator.service" ]; then
-  cp "$SCRIPT_DIR/../aws/packer/setup/e2b-orchestrator.service" /etc/systemd/system/
-  cp "$SCRIPT_DIR/../aws/packer/setup/e2b-api.service" /etc/systemd/system/
-else
-  cat > /etc/systemd/system/e2b-orchestrator.service <<'UNIT'
+# Install systemd units for legacy path.
+# NOTE: The repo-shipped units (aws/packer/setup/*.service) expect pre-built
+# binaries at /usr/local/bin/{orchestrator,e2b-api} and are designed for the
+# single-node Terraform/AMI path. The legacy script uses `go run .` instead.
+E2B_DIR_RESOLVED="${E2B_HOME:-/home/ubuntu/e2b}"
+
+cat > /etc/systemd/system/e2b-orchestrator.service <<UNIT
 [Unit]
 Description=E2B Orchestrator
-After=network-online.target docker.service e2b-network.service
+After=network-online.target docker.service
 Requires=docker.service
 [Service]
 Type=simple
 EnvironmentFile=/opt/e2b/orchestrator.env
 ExecStart=/usr/local/go/bin/go run .
-WorkingDirectory=/home/ubuntu/e2b/packages/orchestrator
+WorkingDirectory=${E2B_DIR_RESOLVED}/packages/orchestrator
 Restart=on-failure
 RestartSec=5
 StandardOutput=append:/var/log/orchestrator.log
@@ -300,7 +301,7 @@ StandardError=append:/var/log/orchestrator.log
 WantedBy=multi-user.target
 UNIT
 
-  cat > /etc/systemd/system/e2b-api.service <<'UNIT'
+cat > /etc/systemd/system/e2b-api.service <<UNIT
 [Unit]
 Description=E2B API Server
 After=network-online.target docker.service e2b-orchestrator.service
@@ -309,7 +310,7 @@ Requires=docker.service
 Type=simple
 EnvironmentFile=/opt/e2b/api.env
 ExecStart=/usr/local/go/bin/go run .
-WorkingDirectory=/home/ubuntu/e2b/packages/api
+WorkingDirectory=${E2B_DIR_RESOLVED}/packages/api
 Restart=on-failure
 RestartSec=5
 StandardOutput=append:/var/log/api.log
@@ -317,28 +318,82 @@ StandardError=append:/var/log/api.log
 [Install]
 WantedBy=multi-user.target
 UNIT
+
+# Install the Firecracker networking helper + systemd unit (normally done by packer AMI build).
+# The legacy script runs on stock Ubuntu, so we must install these ourselves.
+NETWORKING_SCRIPT="$SCRIPT_DIR/../aws/packer/setup/setup-firecracker-networking.sh"
+NETWORKING_SERVICE="$SCRIPT_DIR/../aws/packer/setup/e2b-network.service"
+if [ -f "$NETWORKING_SCRIPT" ]; then
+  install -m 0755 "$NETWORKING_SCRIPT" /opt/e2b/setup-firecracker-networking.sh
+else
+  # Inline fallback if repo layout is missing
+  cat > /opt/e2b/setup-firecracker-networking.sh <<'NETSCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+FC_SUBNET="10.11.0.0/16"
+DEFAULT_IF=$(ip route show default | awk '{print $5}' | head -1)
+[ -z "$DEFAULT_IF" ] && { echo "e2b-network: no default route" | logger -t e2b-network; exit 1; }
+iptables -N E2B-FORWARD 2>/dev/null || true
+iptables -t nat -N E2B-POSTROUTING 2>/dev/null || true
+iptables -F E2B-FORWARD
+iptables -t nat -F E2B-POSTROUTING
+iptables -C FORWARD -j E2B-FORWARD 2>/dev/null || iptables -I FORWARD 1 -j E2B-FORWARD
+iptables -t nat -C POSTROUTING -j E2B-POSTROUTING 2>/dev/null || iptables -t nat -I POSTROUTING 1 -j E2B-POSTROUTING
+iptables -A E2B-FORWARD -s "$FC_SUBNET" -j ACCEPT
+iptables -A E2B-FORWARD -d "$FC_SUBNET" -j ACCEPT
+iptables -t nat -A E2B-POSTROUTING -s "$FC_SUBNET" -o "$DEFAULT_IF" -j MASQUERADE
+echo "e2b-network: rules applied (subnet=$FC_SUBNET, iface=$DEFAULT_IF)" | logger -t e2b-network
+NETSCRIPT
+  chmod +x /opt/e2b/setup-firecracker-networking.sh
+fi
+
+if [ -f "$NETWORKING_SERVICE" ]; then
+  install -m 0644 "$NETWORKING_SERVICE" /etc/systemd/system/e2b-network.service
+else
+  cat > /etc/systemd/system/e2b-network.service <<'NETSVC'
+[Unit]
+Description=E2B Firecracker VM networking (iptables rules)
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/opt/e2b/setup-firecracker-networking.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+NETSVC
 fi
 
 systemctl daemon-reload
+systemctl enable e2b-network.service
+# Apply network rules now
+/opt/e2b/setup-firecracker-networking.sh
 
 # Write restart convenience script (uses systemd)
 cat > /opt/e2b/restart-services.sh <<'SERVICES_EOF'
 #!/bin/bash
 set -e
 
-# Clean network state
+# --- Clean all E2B network state ---
 for ns in $(ip netns list 2>/dev/null | awk '{print $1}'); do
     ip netns delete $ns 2>/dev/null || true
 done
-for veth in $(ip link show | grep 'veth-' | awk -F': ' '{print $2}' | cut -d'@' -f1); do
+for veth in $(ip link show 2>/dev/null | grep 'veth-' | awk -F': ' '{print $2}' | cut -d'@' -f1); do
     ip link delete $veth 2>/dev/null || true
 done
-# Flush only E2B-specific iptables chains (preserves Docker and system rules)
+# Purge stale per-sandbox rules from built-in chains (rules referencing dead veth-* interfaces)
+for chain_spec in "filter FORWARD" "nat POSTROUTING" "nat PREROUTING"; do
+    table=$(echo "$chain_spec" | awk '{print $1}')
+    chain=$(echo "$chain_spec" | awk '{print $2}')
+    iptables -t "$table" -S "$chain" 2>/dev/null | grep -n 'veth-' | sort -t: -k1 -rn | while IFS=: read -r _ rule; do
+        iptables -t "$table" $(echo "$rule" | sed "s/^-A/-D/") 2>/dev/null || true
+    done
+done
+
+# Flush E2B static chains and repopulate
 iptables -F E2B-FORWARD 2>/dev/null || true
 iptables -t nat -F E2B-POSTROUTING 2>/dev/null || true
-
-# Restart E2B network rules
-/opt/e2b/setup-firecracker-networking.sh 2>/dev/null || true
+/opt/e2b/setup-firecracker-networking.sh
 
 # Restart services via systemd
 systemctl restart e2b-orchestrator
