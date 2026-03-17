@@ -26,6 +26,10 @@ log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
 log "=== E2B Self-Hosted Setup Starting ==="
 
+# ── Ensure HOME/GOPATH are set (cloud-init user-data runs with HOME unset) ──
+export HOME="${HOME:-/root}"
+export GOPATH="${GOPATH:-$HOME/go}"
+
 # ── Configuration ───────────────────────────────────────────────────────
 DATA_DIR="/data/e2b"
 E2B_HOME="/home/ubuntu/e2b"

@@ -6,6 +6,10 @@ set -euo pipefail
 #   1. Pre-built AMI: Just restart services (fast, ~1 min)
 #   2. Stock Ubuntu:  Full setup via ec2-setup.sh (~15 min)
 
+# cloud-init may run user-data with HOME unset, which breaks Go module resolution
+export HOME="${HOME:-/root}"
+export GOPATH="${GOPATH:-$HOME/go}"
+
 exec > /var/log/e2b-user-data.log 2>&1
 echo "=== E2B Automated Setup — $(date) ==="
 echo "Environment: ${environment}"
