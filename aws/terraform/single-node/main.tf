@@ -120,6 +120,12 @@ variable "kernel_version" {
   default     = "vmlinux-6.1.158"
 }
 
+variable "kernel_url" {
+  description = "HTTPS URL to download the Firecracker kernel binary. If empty, downloads from project GitHub release."
+  type        = string
+  default     = ""
+}
+
 variable "go_version" {
   description = "Go toolchain version"
   type        = string
@@ -252,6 +258,7 @@ resource "aws_instance" "e2b" {
     fc_version     = var.fc_version
     fc_commit      = var.fc_commit
     kernel_version = var.kernel_version
+    kernel_url     = var.kernel_url
     go_version     = var.go_version
     e2b_repo_url   = var.e2b_repo_url
     e2b_repo_ref   = var.e2b_repo_ref

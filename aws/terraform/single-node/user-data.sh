@@ -101,6 +101,7 @@ fi
 export FC_VERSION="${fc_version}"
 export FC_COMMIT="${fc_commit}"
 export KERNEL_VERSION="${kernel_version}"
+export KERNEL_URL="${kernel_url}"
 export GO_VERSION="${go_version}"
 export INFRA_REPO_URL="${infra_repo_url}"
 export INFRA_REPO_REF="${infra_repo_ref}"
