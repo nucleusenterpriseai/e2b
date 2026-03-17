@@ -381,11 +381,15 @@ done
 for veth in $(ip link show 2>/dev/null | grep 'veth-' | awk -F': ' '{print $2}' | cut -d'@' -f1); do
     ip link delete $veth 2>/dev/null || true
 done
-# Purge stale per-sandbox rules from built-in chains (rules referencing dead veth-* interfaces)
-for chain_spec in "filter FORWARD" "nat POSTROUTING" "nat PREROUTING"; do
+# Purge stale per-sandbox iptables rules from built-in chains.
+# FORWARD/PREROUTING rules reference veth-*; POSTROUTING MASQUERADE rules
+# use -s 10.11.0.X/32 (sandbox host subnet, no veth token).
+FC_HOST_PREFIX="10.11"
+for chain_spec in "filter FORWARD veth-" "nat PREROUTING veth-" "nat POSTROUTING veth-" "nat POSTROUTING ${FC_HOST_PREFIX}."; do
     table=$(echo "$chain_spec" | awk '{print $1}')
     chain=$(echo "$chain_spec" | awk '{print $2}')
-    iptables -t "$table" -S "$chain" 2>/dev/null | grep -n 'veth-' | sort -t: -k1 -rn | while IFS=: read -r _ rule; do
+    pattern=$(echo "$chain_spec" | awk '{print $3}')
+    iptables -t "$table" -S "$chain" 2>/dev/null | grep -n "$pattern" | sort -t: -k1 -rn | while IFS=: read -r _ rule; do
         iptables -t "$table" $(echo "$rule" | sed "s/^-A/-D/") 2>/dev/null || true
     done
 done

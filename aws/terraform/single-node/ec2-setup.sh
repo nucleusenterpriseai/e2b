@@ -118,6 +118,57 @@ else
     log "  WARNING: /dev/kvm not found — Firecracker will not work"
 fi
 
+# Install Firecracker networking helper + systemd unit.
+# On AMI-based instances this is done by packer (system-tuning.sh), but the
+# stock-Ubuntu full-setup path needs it installed here.
+log "  Installing E2B networking helper..."
+mkdir -p /opt/e2b
+NETWORKING_SRC="$E2B_HOME/aws/packer/setup/setup-firecracker-networking.sh"
+NETWORKING_SVC="$E2B_HOME/aws/packer/setup/e2b-network.service"
+if [ -f "$NETWORKING_SRC" ]; then
+    install -m 0755 "$NETWORKING_SRC" /opt/e2b/setup-firecracker-networking.sh
+else
+    # Inline fallback
+    cat > /opt/e2b/setup-firecracker-networking.sh <<'NETSCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+FC_SUBNET="10.11.0.0/16"
+DEFAULT_IF=$(ip route show default | awk '{print $5}' | head -1)
+[ -z "$DEFAULT_IF" ] && { echo "e2b-network: no default route" | logger -t e2b-network; exit 1; }
+iptables -N E2B-FORWARD 2>/dev/null || true
+iptables -t nat -N E2B-POSTROUTING 2>/dev/null || true
+iptables -F E2B-FORWARD
+iptables -t nat -F E2B-POSTROUTING
+iptables -C FORWARD -j E2B-FORWARD 2>/dev/null || iptables -I FORWARD 1 -j E2B-FORWARD
+iptables -t nat -C POSTROUTING -j E2B-POSTROUTING 2>/dev/null || iptables -t nat -I POSTROUTING 1 -j E2B-POSTROUTING
+iptables -A E2B-FORWARD -s "$FC_SUBNET" -j ACCEPT
+iptables -A E2B-FORWARD -d "$FC_SUBNET" -j ACCEPT
+iptables -t nat -A E2B-POSTROUTING -s "$FC_SUBNET" -o "$DEFAULT_IF" -j MASQUERADE
+echo "e2b-network: rules applied (subnet=$FC_SUBNET, iface=$DEFAULT_IF)" | logger -t e2b-network
+NETSCRIPT
+    chmod +x /opt/e2b/setup-firecracker-networking.sh
+fi
+if [ -f "$NETWORKING_SVC" ]; then
+    install -m 0644 "$NETWORKING_SVC" /etc/systemd/system/e2b-network.service
+else
+    cat > /etc/systemd/system/e2b-network.service <<'NETSVC'
+[Unit]
+Description=E2B Firecracker VM networking (iptables rules)
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/opt/e2b/setup-firecracker-networking.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+NETSVC
+fi
+systemctl daemon-reload
+systemctl enable e2b-network.service
+/opt/e2b/setup-firecracker-networking.sh
+log "  E2B networking helper installed and active"
+
 # ── 7. Docker Services (PostgreSQL, Redis, Registry) ───────────────────
 log "Step 7/12: Starting Docker services..."
 
@@ -352,11 +403,17 @@ done
 for veth in $(ip link show 2>/dev/null | grep 'veth-' | awk -F': ' '{print $2}' | cut -d'@' -f1); do
     ip link delete "$veth" 2>/dev/null || true
 done
-# Purge stale per-sandbox rules from built-in chains (rules referencing dead veth-* interfaces)
-for chain_spec in "filter FORWARD" "nat POSTROUTING" "nat PREROUTING"; do
+# Purge stale per-sandbox iptables rules from built-in chains.
+# FORWARD and PREROUTING rules reference veth-* interfaces.
+# POSTROUTING MASQUERADE rules use -s 10.11.0.X/32 (no veth token),
+# so we match the sandbox subnet separately.
+FC_HOST_SUBNET="${SANDBOXES_HOST_NETWORK_CIDR:-10.11.0.0/16}"
+FC_HOST_PREFIX=$(echo "$FC_HOST_SUBNET" | cut -d'.' -f1-2)  # e.g. "10.11"
+for chain_spec in "filter FORWARD veth-" "nat PREROUTING veth-" "nat POSTROUTING veth-" "nat POSTROUTING ${FC_HOST_PREFIX}."; do
     table=$(echo "$chain_spec" | awk '{print $1}')
     chain=$(echo "$chain_spec" | awk '{print $2}')
-    iptables -t "$table" -S "$chain" 2>/dev/null | grep -n 'veth-' | sort -t: -k1 -rn | while IFS=: read -r _ rule; do
+    pattern=$(echo "$chain_spec" | awk '{print $3}')
+    iptables -t "$table" -S "$chain" 2>/dev/null | grep -n "$pattern" | sort -t: -k1 -rn | while IFS=: read -r _ rule; do
         iptables -t "$table" $(echo "$rule" | sed "s/^-A/-D/") 2>/dev/null || true
     done
 done
@@ -587,13 +644,15 @@ done
 for veth in $(ip link show 2>/dev/null | grep 'veth-' | awk -F': ' '{print $2}' | cut -d'@' -f1); do
     ip link delete "$veth" 2>/dev/null || true
 done
-# Purge stale per-sandbox rules from built-in chains (rules referencing dead veth-* interfaces)
-for chain_spec in "filter FORWARD" "nat POSTROUTING" "nat PREROUTING"; do
+# Purge stale per-sandbox iptables rules from built-in chains.
+# FORWARD/PREROUTING rules reference veth-*; POSTROUTING MASQUERADE rules
+# use -s 10.11.0.X/32 (sandbox host subnet, no veth token).
+FC_HOST_PREFIX="10.11"  # first two octets of default sandbox host subnet
+for chain_spec in "filter FORWARD veth-" "nat PREROUTING veth-" "nat POSTROUTING veth-" "nat POSTROUTING ${FC_HOST_PREFIX}."; do
     table=$(echo "$chain_spec" | awk '{print $1}')
     chain=$(echo "$chain_spec" | awk '{print $2}')
-    # List rules, find veth-* references, delete in reverse order to preserve indices
-    iptables -t "$table" -S "$chain" 2>/dev/null | grep -n 'veth-' | sort -t: -k1 -rn | while IFS=: read -r _ rule; do
-        # Convert -A to -D for deletion
+    pattern=$(echo "$chain_spec" | awk '{print $3}')
+    iptables -t "$table" -S "$chain" 2>/dev/null | grep -n "$pattern" | sort -t: -k1 -rn | while IFS=: read -r _ rule; do
         iptables -t "$table" $(echo "$rule" | sed "s/^-A/-D/") 2>/dev/null || true
     done
 done
