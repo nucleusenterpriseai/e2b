@@ -344,18 +344,16 @@ VALUES ('00000000-0000-0000-0000-000000000001', 'self-hosted', 'base_v1', 'admin
 ON CONFLICT (id) DO NOTHING;
 " 2>/dev/null || true
 
-# Generate API key
+# Generate API key (non-fatal — key can be generated manually later)
 log "  Generating API key..."
+API_KEY_OUTPUT=""
 cd "$E2B_HOME"
 if [ -f aws/db/generate_api_key.go ]; then
-    API_KEY_OUTPUT=$(/usr/local/go/bin/go run aws/db/generate_api_key.go 2>&1)
-else
-    # Build generate_api_key inline using the infra keys package
-    API_KEY_OUTPUT=$(/usr/local/go/bin/go run "$INFRA_DIR/packages/shared/cmd/generate-api-key/main.go" 2>&1) || {
-        log "  WARNING: Could not generate API key automatically."
-        log "  Run manually: cd $E2B_HOME && go run aws/db/generate_api_key.go"
-        API_KEY_OUTPUT=""
-    }
+    API_KEY_OUTPUT=$(/usr/local/go/bin/go run aws/db/generate_api_key.go 2>&1) || API_KEY_OUTPUT=""
+fi
+if [ -z "$API_KEY_OUTPUT" ]; then
+    log "  WARNING: Could not generate API key automatically."
+    log "  Run manually after setup: cd $E2B_HOME && go run aws/db/generate_api_key.go"
 fi
 
 if [ -n "$API_KEY_OUTPUT" ]; then
