@@ -297,17 +297,38 @@ mkdir -p "$KERNEL_DIR" "$KERNEL_TEMPLATE_DIR"
 if [ ! -f "$KERNEL_DIR/vmlinux.bin" ] || [ ! -s "$KERNEL_DIR/vmlinux.bin" ]; then
     rm -f "$KERNEL_DIR/vmlinux.bin"  # remove 0-byte stale files
     log "  Downloading kernel $KERNEL_VERSION for $FC_ARCH..."
-    KERNEL_URL="https://github.com/e2b-dev/firecracker-kernels/releases/download/${KERNEL_VERSION}/vmlinux-${FC_ARCH}.bin"
-    wget -q "$KERNEL_URL" -O "$KERNEL_DIR/vmlinux.bin" 2>/dev/null || {
-        log "  Trying alternative kernel source..."
-        KERNEL_URL="https://github.com/e2b-dev/firecracker-kernels/releases/latest/download/vmlinux-${FC_ARCH}.bin"
-        wget -q "$KERNEL_URL" -O "$KERNEL_DIR/vmlinux.bin" 2>/dev/null || true
-    }
+    KERNEL_DOWNLOADED=false
+
+    # 1. Try explicit kernel_url (set via Terraform variable or env)
+    if [ -n "${KERNEL_URL:-}" ]; then
+        log "  Using provided KERNEL_URL: $KERNEL_URL"
+        if echo "$KERNEL_URL" | grep -q "^s3://"; then
+            aws s3 cp "$KERNEL_URL" "$KERNEL_DIR/vmlinux.bin" 2>/dev/null && KERNEL_DOWNLOADED=true
+        else
+            wget -q "$KERNEL_URL" -O "$KERNEL_DIR/vmlinux.bin" 2>/dev/null && KERNEL_DOWNLOADED=true
+        fi
+    fi
+
+    # 2. Fallback: try project GitHub release
+    if [ "$KERNEL_DOWNLOADED" = false ]; then
+        GH_KERNEL_URL="https://github.com/nucleusenterpriseai/e2b/releases/download/kernels-v1/${KERNEL_VERSION}-${FC_ARCH}.bin"
+        log "  Trying project release: $GH_KERNEL_URL"
+        wget -q "$GH_KERNEL_URL" -O "$KERNEL_DIR/vmlinux.bin" 2>/dev/null && KERNEL_DOWNLOADED=true
+    fi
+
+    # 3. Fallback: try upstream e2b-dev GitHub releases
+    if [ "$KERNEL_DOWNLOADED" = false ]; then
+        GH_KERNEL_URL="https://github.com/e2b-dev/firecracker-kernels/releases/download/${KERNEL_VERSION}/vmlinux-${FC_ARCH}.bin"
+        wget -q "$GH_KERNEL_URL" -O "$KERNEL_DIR/vmlinux.bin" 2>/dev/null && KERNEL_DOWNLOADED=true
+    fi
+
     # Validate — wget -O creates 0-byte files on 404
     if [ ! -s "$KERNEL_DIR/vmlinux.bin" ]; then
         rm -f "$KERNEL_DIR/vmlinux.bin"
-        log "  WARNING: Could not download kernel. You must manually place vmlinux.bin in $KERNEL_DIR/"
+        log "  FATAL: Could not download kernel. Set kernel_url in terraform.tfvars or place vmlinux.bin in $KERNEL_DIR/"
+        exit 1
     fi
+    log "  Kernel downloaded: $(ls -la "$KERNEL_DIR/vmlinux.bin")"
 fi
 if [ ! -f "$KERNEL_TEMPLATE_DIR/vmlinux.bin" ]; then
     ln -sf "$KERNEL_DIR/vmlinux.bin" "$KERNEL_TEMPLATE_DIR/vmlinux.bin"
