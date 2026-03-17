@@ -622,6 +622,7 @@ else
     log "  FATAL: Base template build failed — marking as failed"
     PGPASSWORD=$DB_PASS psql -h localhost -U $DB_USER -d $DB_NAME -c \
         "UPDATE env_builds SET status='failed', status_group='error', updated_at=now() WHERE id='${BASE_BUILD_ID}';"
+    exit 1
 fi
 
 # ── 13. Build Desktop Template (optional) ────────────────────────────
@@ -649,11 +650,9 @@ if [ -f "$DESKTOP_DOCKERFILE" ]; then
       '$KERNEL_VERSION', '${FC_VERSION}_${FC_COMMIT}', '$ENVD_VERSION', now()
     ) ON CONFLICT (id) DO NOTHING;
 
+    DELETE FROM env_build_assignments WHERE env_id = 'desktop' AND tag = 'default';
     INSERT INTO env_build_assignments (env_id, build_id, tag)
-    SELECT 'desktop', '${DESKTOP_BUILD_ID}', 'default'
-    WHERE NOT EXISTS (
-      SELECT 1 FROM env_build_assignments WHERE env_id = 'desktop' AND tag = 'default'
-    );
+    VALUES ('desktop', '${DESKTOP_BUILD_ID}', 'default');
 
     INSERT INTO env_aliases (env_id, alias, namespace)
     VALUES ('desktop', 'desktop', NULL)
