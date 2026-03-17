@@ -121,7 +121,7 @@ variable "kernel_version" {
 }
 
 variable "kernel_url" {
-  description = "URL to download the Firecracker kernel binary (S3 presigned URL, HTTP, etc). If empty, tries GitHub releases (may 404)."
+  description = "HTTPS URL to download the Firecracker kernel binary. If empty, downloads from project GitHub release."
   type        = string
   default     = ""
 }

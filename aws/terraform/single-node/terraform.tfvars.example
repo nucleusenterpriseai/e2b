@@ -15,9 +15,8 @@ fc_commit      = "a41d3fb"
 kernel_version = "vmlinux-6.1.158"
 go_version     = "1.25.4"
 
-# Kernel download URL (S3, HTTP, etc). Required for stock-Ubuntu deploys.
-# GitHub releases may not have your arch/version.
-# kernel_url = "s3://your-bucket/kernels/vmlinux-6.1.158-aarch64.bin"
+# Kernel download URL (HTTPS only). If empty, downloads from project GitHub release.
+# kernel_url = "https://example.com/kernels/vmlinux-6.1.158-aarch64.bin"
 
 # Your e2b project repo (has ec2-setup.sh, templates, custom configs)
 # e2b_repo_url = "https://github.com/your-org/e2b.git"

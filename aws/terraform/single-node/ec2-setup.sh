@@ -299,14 +299,10 @@ if [ ! -f "$KERNEL_DIR/vmlinux.bin" ] || [ ! -s "$KERNEL_DIR/vmlinux.bin" ]; the
     log "  Downloading kernel $KERNEL_VERSION for $FC_ARCH..."
     KERNEL_DOWNLOADED=false
 
-    # 1. Try explicit kernel_url (set via Terraform variable or env)
+    # 1. Try explicit kernel_url (HTTPS only — set via Terraform variable or env)
     if [ -n "${KERNEL_URL:-}" ]; then
         log "  Using provided KERNEL_URL: $KERNEL_URL"
-        if echo "$KERNEL_URL" | grep -q "^s3://"; then
-            aws s3 cp "$KERNEL_URL" "$KERNEL_DIR/vmlinux.bin" 2>/dev/null && KERNEL_DOWNLOADED=true
-        else
-            wget -q "$KERNEL_URL" -O "$KERNEL_DIR/vmlinux.bin" 2>/dev/null && KERNEL_DOWNLOADED=true
-        fi
+        wget -q "$KERNEL_URL" -O "$KERNEL_DIR/vmlinux.bin" 2>/dev/null && KERNEL_DOWNLOADED=true
     fi
 
     # 2. Fallback: try project GitHub release
@@ -365,16 +361,21 @@ VALUES ('00000000-0000-0000-0000-000000000001', 'self-hosted', 'base_v1', 'admin
 ON CONFLICT (id) DO NOTHING;
 " 2>/dev/null || true
 
-# Generate API key (non-fatal — key can be generated manually later)
+# Generate API key
 log "  Generating API key..."
 API_KEY_OUTPUT=""
-cd "$E2B_HOME"
-if [ -f aws/db/generate_api_key.go ]; then
-    API_KEY_OUTPUT=$(/usr/local/go/bin/go run aws/db/generate_api_key.go 2>&1) || API_KEY_OUTPUT=""
-fi
-if [ -z "$API_KEY_OUTPUT" ]; then
-    log "  WARNING: Could not generate API key automatically."
-    log "  Run manually after setup: cd $E2B_HOME && go run aws/db/generate_api_key.go"
+if [ -f "$E2B_HOME/aws/db/generate_api_key.go" ]; then
+    cd "$E2B_HOME/aws/db"
+    # Fix the go.mod replace directive for the on-instance directory layout.
+    # In the repo, aws/db/ is 2 levels below root, so replace => ../../infra/...
+    # On the instance, aws/db/ is 1 level below $E2B_HOME, so replace => ../infra/...
+    # Fix go.mod replace directive for on-instance directory layout
+    # Repo: aws/db/ is 2 levels below root → ../../infra/
+    # Instance: aws/db/ is 1 level below $E2B_HOME → ../infra/
+    sed -i 's|=> ../../infra/|=> ../infra/|' go.mod 2>/dev/null || true
+    /usr/local/go/bin/go mod tidy 2>/dev/null || true
+    API_KEY_OUTPUT=$(/usr/local/go/bin/go run -buildvcs=false generate_api_key.go 2>&1) || API_KEY_OUTPUT=""
+    cd "$E2B_HOME"
 fi
 
 if [ -n "$API_KEY_OUTPUT" ]; then
@@ -387,6 +388,12 @@ if [ -n "$API_KEY_OUTPUT" ]; then
         log "  API Key generated and saved to $API_KEY_FILE"
         log "  Key: $RAW_KEY"
     fi
+fi
+
+if [ ! -f "$API_KEY_FILE" ]; then
+    log "  FATAL: API key generation failed. /opt/e2b/api-key does not exist."
+    log "  Debug: cd $E2B_HOME/aws/db && go run -buildvcs=false generate_api_key.go"
+    exit 1
 fi
 
 # Get actual envd version from built binary
