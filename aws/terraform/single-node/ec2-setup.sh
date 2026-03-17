@@ -327,9 +327,20 @@ export PATH="/root/go/bin:$PATH"
 PGPASSWORD=$DB_PASS psql -h localhost -U $DB_USER -d $DB_NAME -c \
     "CREATE ROLE postgres WITH LOGIN SUPERUSER PASSWORD 'postgres';" 2>/dev/null || true
 
+# Create _migrations table with correct schema (Supabase RLS migration + API startup need it)
+PGPASSWORD=$DB_PASS psql -h localhost -U $DB_USER -d $DB_NAME -c \
+    "CREATE TABLE IF NOT EXISTS public._migrations (id serial PRIMARY KEY, version_id bigint NOT NULL, is_applied boolean NOT NULL, tstamp timestamp DEFAULT now());" 2>/dev/null || true
+
 MIGRATIONS_DIR="$INFRA_DIR/packages/db/migrations"
 log "  Running goose migrations from $MIGRATIONS_DIR..."
 goose -dir "$MIGRATIONS_DIR" postgres "$DB_URL" up
+
+# Record the latest migration version for the API startup check
+LATEST_VERSION=$(ls "$MIGRATIONS_DIR"/*.sql | sort | tail -1 | grep -oP '\d+' | head -1)
+if [ -n "$LATEST_VERSION" ]; then
+    PGPASSWORD=$DB_PASS psql -h localhost -U $DB_USER -d $DB_NAME -c \
+        "INSERT INTO public._migrations (version_id, is_applied) VALUES ($LATEST_VERSION, true) ON CONFLICT DO NOTHING;" 2>/dev/null || true
+fi
 
 log "  Seeding tier + team..."
 PGPASSWORD=$DB_PASS psql -h localhost -U $DB_USER -d $DB_NAME -c "
