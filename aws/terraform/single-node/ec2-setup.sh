@@ -398,25 +398,27 @@ log "  envd version: $ENVD_VERSION"
 # Seed base template env entry
 log "  Seeding base template in DB..."
 PGPASSWORD=$DB_PASS psql -h localhost -U $DB_USER -d $DB_NAME -c "
-INSERT INTO envs (id, team_id, public, build_count, source)
-VALUES ('base', '00000000-0000-0000-0000-000000000001', true, 1, 'template')
+INSERT INTO envs (id, team_id, public, build_count, source, updated_at)
+VALUES ('base', '00000000-0000-0000-0000-000000000001', true, 1, 'template', now())
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO env_builds (id, env_id, status, status_group, dockerfile, start_cmd, vcpu, ram_mb, free_disk_size_mb, total_disk_size_mb, kernel_version, firecracker_version, envd_version)
+INSERT INTO env_builds (id, env_id, status, status_group, dockerfile, start_cmd, vcpu, ram_mb, free_disk_size_mb, total_disk_size_mb, kernel_version, firecracker_version, envd_version, updated_at)
 VALUES (
   'bb000000-0000-0000-0000-000000000001', 'base', 'uploaded', 'ready',
   'FROM e2bdev/base:latest', '', 2, 512, 512, 512,
-  '$KERNEL_VERSION', '${FC_VERSION}_${FC_COMMIT}', '$ENVD_VERSION'
+  '$KERNEL_VERSION', '${FC_VERSION}_${FC_COMMIT}', '$ENVD_VERSION', now()
 ) ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO env_build_assignments (env_id, build_id, tag)
-VALUES ('base', 'bb000000-0000-0000-0000-000000000001', 'default')
-ON CONFLICT (env_id, tag) DO UPDATE SET build_id = EXCLUDED.build_id;
+SELECT 'base', 'bb000000-0000-0000-0000-000000000001', 'default'
+WHERE NOT EXISTS (
+  SELECT 1 FROM env_build_assignments WHERE env_id = 'base' AND tag = 'default'
+);
 
 INSERT INTO env_aliases (env_id, alias, namespace)
 VALUES ('base', 'base', NULL)
-ON CONFLICT (env_id, alias) DO NOTHING;
-" 2>/dev/null || true
+ON CONFLICT (alias, namespace) DO NOTHING;
+"
 
 # ── 11. Write Service Configs + Start Services ─────────────────────────
 log "Step 11/12: Starting E2B services..."
@@ -630,25 +632,27 @@ if [ -f "$DESKTOP_DOCKERFILE" ]; then
     # Seed desktop template in DB
     log "  Seeding desktop template in DB..."
     PGPASSWORD=$DB_PASS psql -h localhost -U $DB_USER -d $DB_NAME -c "
-    INSERT INTO envs (id, team_id, public, build_count, source)
-    VALUES ('desktop', '00000000-0000-0000-0000-000000000001', true, 1, 'template')
+    INSERT INTO envs (id, team_id, public, build_count, source, updated_at)
+    VALUES ('desktop', '00000000-0000-0000-0000-000000000001', true, 1, 'template', now())
     ON CONFLICT (id) DO NOTHING;
 
-    INSERT INTO env_builds (id, env_id, status, status_group, dockerfile, start_cmd, vcpu, ram_mb, free_disk_size_mb, total_disk_size_mb, kernel_version, firecracker_version, envd_version)
+    INSERT INTO env_builds (id, env_id, status, status_group, dockerfile, start_cmd, vcpu, ram_mb, free_disk_size_mb, total_disk_size_mb, kernel_version, firecracker_version, envd_version, updated_at)
     VALUES (
       '${DESKTOP_BUILD_ID}', 'desktop', 'uploaded', 'ready',
       '', '', 2, 512, 7168, 7168,
-      '$KERNEL_VERSION', '${FC_VERSION}_${FC_COMMIT}', '$ENVD_VERSION'
+      '$KERNEL_VERSION', '${FC_VERSION}_${FC_COMMIT}', '$ENVD_VERSION', now()
     ) ON CONFLICT (id) DO NOTHING;
 
     INSERT INTO env_build_assignments (env_id, build_id, tag)
-    VALUES ('desktop', '${DESKTOP_BUILD_ID}', 'default')
-    ON CONFLICT (env_id, tag) DO UPDATE SET build_id = EXCLUDED.build_id;
+    SELECT 'desktop', '${DESKTOP_BUILD_ID}', 'default'
+    WHERE NOT EXISTS (
+      SELECT 1 FROM env_build_assignments WHERE env_id = 'desktop' AND tag = 'default'
+    );
 
     INSERT INTO env_aliases (env_id, alias, namespace)
     VALUES ('desktop', 'desktop', NULL)
-    ON CONFLICT (env_id, alias) DO NOTHING;
-    " 2>/dev/null || true
+    ON CONFLICT (alias, namespace) DO NOTHING;
+    "
 
     # Run create-build for desktop
     log "  Running create-build for desktop template..."
