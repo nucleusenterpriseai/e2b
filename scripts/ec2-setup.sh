@@ -389,7 +389,7 @@ for chain_spec in "filter FORWARD veth-" "nat PREROUTING veth-" "nat POSTROUTING
     table=$(echo "$chain_spec" | awk '{print $1}')
     chain=$(echo "$chain_spec" | awk '{print $2}')
     pattern=$(echo "$chain_spec" | awk '{print $3}')
-    iptables -t "$table" -S "$chain" 2>/dev/null | grep -n "$pattern" | sort -t: -k1 -rn | while IFS=: read -r _ rule; do
+    iptables -t "$table" -S "$chain" 2>/dev/null | { grep -n "$pattern" || true; } | sort -t: -k1 -rn | while IFS=: read -r _ rule; do
         iptables -t "$table" $(echo "$rule" | sed "s/^-A/-D/") 2>/dev/null || true
     done
 done
