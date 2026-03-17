@@ -366,14 +366,6 @@ log "  Generating API key..."
 API_KEY_OUTPUT=""
 if [ -f "$E2B_HOME/aws/db/generate_api_key.go" ]; then
     cd "$E2B_HOME/aws/db"
-    # Fix the go.mod replace directive for the on-instance directory layout.
-    # In the repo, aws/db/ is 2 levels below root, so replace => ../../infra/...
-    # On the instance, aws/db/ is 1 level below $E2B_HOME, so replace => ../infra/...
-    # Fix go.mod replace directive for on-instance directory layout
-    # Repo: aws/db/ is 2 levels below root → ../../infra/
-    # Instance: aws/db/ is 1 level below $E2B_HOME → ../infra/
-    sed -i 's|=> ../../infra/|=> ../infra/|' go.mod 2>/dev/null || true
-    /usr/local/go/bin/go mod tidy 2>/dev/null || true
     API_KEY_OUTPUT=$(/usr/local/go/bin/go run -buildvcs=false generate_api_key.go 2>&1) || API_KEY_OUTPUT=""
     cd "$E2B_HOME"
 fi
