@@ -127,8 +127,11 @@ fi
 # stock-Ubuntu full-setup path needs it installed here.
 log "  Installing E2B networking helper..."
 mkdir -p /opt/e2b
+# Check both direct and custom/ paths for repo-shipped files
 NETWORKING_SRC="$E2B_HOME/aws/packer/setup/setup-firecracker-networking.sh"
 NETWORKING_SVC="$E2B_HOME/aws/packer/setup/e2b-network.service"
+[ -f "$NETWORKING_SRC" ] || NETWORKING_SRC="$E2B_HOME/custom/aws/packer/setup/setup-firecracker-networking.sh"
+[ -f "$NETWORKING_SVC" ] || NETWORKING_SVC="$E2B_HOME/custom/aws/packer/setup/e2b-network.service"
 if [ -f "$NETWORKING_SRC" ]; then
     install -m 0755 "$NETWORKING_SRC" /opt/e2b/setup-firecracker-networking.sh
 else
@@ -498,8 +501,15 @@ EOF
 chmod 600 /opt/e2b/orchestrator.env /opt/e2b/api.env
 
 # Install systemd unit files
-cp "$E2B_HOME/aws/packer/setup/e2b-orchestrator.service" /etc/systemd/system/ 2>/dev/null || \
-cat > /etc/systemd/system/e2b-orchestrator.service <<'UNIT'
+# Try repo-shipped units first; fall back to inline definitions
+if [ -f "$E2B_HOME/aws/packer/setup/e2b-orchestrator.service" ]; then
+    cp "$E2B_HOME/aws/packer/setup/e2b-orchestrator.service" /etc/systemd/system/
+    cp "$E2B_HOME/aws/packer/setup/e2b-api.service" /etc/systemd/system/
+elif [ -f "$E2B_HOME/custom/aws/packer/setup/e2b-orchestrator.service" ]; then
+    cp "$E2B_HOME/custom/aws/packer/setup/e2b-orchestrator.service" /etc/systemd/system/
+    cp "$E2B_HOME/custom/aws/packer/setup/e2b-api.service" /etc/systemd/system/
+else
+    cat > /etc/systemd/system/e2b-orchestrator.service <<'UNIT'
 [Unit]
 Description=E2B Orchestrator — Firecracker VM orchestration
 After=network-online.target docker.service e2b-network.service
@@ -519,8 +529,7 @@ LimitNPROC=65536
 WantedBy=multi-user.target
 UNIT
 
-cp "$E2B_HOME/aws/packer/setup/e2b-api.service" /etc/systemd/system/ 2>/dev/null || \
-cat > /etc/systemd/system/e2b-api.service <<'UNIT'
+    cat > /etc/systemd/system/e2b-api.service <<'UNIT'
 [Unit]
 Description=E2B API Server — REST API for sandbox management
 After=network-online.target docker.service e2b-orchestrator.service
@@ -538,6 +547,7 @@ LimitNOFILE=65536
 [Install]
 WantedBy=multi-user.target
 UNIT
+fi
 
 systemctl daemon-reload
 
