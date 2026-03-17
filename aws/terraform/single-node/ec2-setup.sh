@@ -247,25 +247,25 @@ fi
 # Build orchestrator
 log "  Building orchestrator..."
 cd "$INFRA_DIR/packages/orchestrator"
-CGO_ENABLED=1 GOOS=linux GOARCH=$GOARCH /usr/local/go/bin/go build -o /usr/local/bin/orchestrator .
+CGO_ENABLED=1 GOOS=linux GOARCH=$GOARCH /usr/local/go/bin/go build -buildvcs=false -o /usr/local/bin/orchestrator .
 log "  Built: /usr/local/bin/orchestrator"
 
 # Build API
 log "  Building API..."
 cd "$INFRA_DIR/packages/api"
-CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH /usr/local/go/bin/go build -o /usr/local/bin/e2b-api .
+CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH /usr/local/go/bin/go build -buildvcs=false -o /usr/local/bin/e2b-api .
 log "  Built: /usr/local/bin/e2b-api"
 
 # Build envd
 log "  Building envd..."
 cd "$INFRA_DIR/packages/envd"
-CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH /usr/local/go/bin/go build -o "$ENVD_DIR/envd" .
+CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH /usr/local/go/bin/go build -buildvcs=false -o "$ENVD_DIR/envd" .
 log "  Built: $ENVD_DIR/envd"
 
 # Build create-build tool
 log "  Building create-build..."
 cd "$INFRA_DIR/packages/orchestrator"
-CGO_ENABLED=1 GOOS=linux GOARCH=$GOARCH /usr/local/go/bin/go build -o /usr/local/bin/create-build ./cmd/create-build/
+CGO_ENABLED=1 GOOS=linux GOARCH=$GOARCH /usr/local/go/bin/go build -buildvcs=false -o /usr/local/bin/create-build ./cmd/create-build/
 log "  Built: /usr/local/bin/create-build"
 
 # ── 9. Download Firecracker + Kernel ────────────────────────────────────
