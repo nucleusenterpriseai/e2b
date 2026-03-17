@@ -26,6 +26,10 @@ log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
 log "=== E2B Self-Hosted Setup Starting ==="
 
+# ── Ensure HOME/GOPATH are set (cloud-init user-data runs with HOME unset) ──
+export HOME="${HOME:-/root}"
+export GOPATH="${GOPATH:-$HOME/go}"
+
 # ── Configuration ───────────────────────────────────────────────────────
 DATA_DIR="/data/e2b"
 E2B_HOME="/home/ubuntu/e2b"
@@ -243,25 +247,25 @@ fi
 # Build orchestrator
 log "  Building orchestrator..."
 cd "$INFRA_DIR/packages/orchestrator"
-CGO_ENABLED=1 GOOS=linux GOARCH=$GOARCH /usr/local/go/bin/go build -o /usr/local/bin/orchestrator .
+CGO_ENABLED=1 GOOS=linux GOARCH=$GOARCH /usr/local/go/bin/go build -buildvcs=false -o /usr/local/bin/orchestrator .
 log "  Built: /usr/local/bin/orchestrator"
 
 # Build API
 log "  Building API..."
 cd "$INFRA_DIR/packages/api"
-CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH /usr/local/go/bin/go build -o /usr/local/bin/e2b-api .
+CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH /usr/local/go/bin/go build -buildvcs=false -o /usr/local/bin/e2b-api .
 log "  Built: /usr/local/bin/e2b-api"
 
 # Build envd
 log "  Building envd..."
 cd "$INFRA_DIR/packages/envd"
-CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH /usr/local/go/bin/go build -o "$ENVD_DIR/envd" .
+CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH /usr/local/go/bin/go build -buildvcs=false -o "$ENVD_DIR/envd" .
 log "  Built: $ENVD_DIR/envd"
 
 # Build create-build tool
 log "  Building create-build..."
 cd "$INFRA_DIR/packages/orchestrator"
-CGO_ENABLED=1 GOOS=linux GOARCH=$GOARCH /usr/local/go/bin/go build -o /usr/local/bin/create-build ./cmd/create-build/
+CGO_ENABLED=1 GOOS=linux GOARCH=$GOARCH /usr/local/go/bin/go build -buildvcs=false -o /usr/local/bin/create-build ./cmd/create-build/
 log "  Built: /usr/local/bin/create-build"
 
 # ── 9. Download Firecracker + Kernel ────────────────────────────────────
@@ -319,9 +323,13 @@ if ! command -v goose &>/dev/null; then
 fi
 export PATH="/root/go/bin:$PATH"
 
+# Create postgres role (needed by Supabase auth migration)
+PGPASSWORD=$DB_PASS psql -h localhost -U $DB_USER -d $DB_NAME -c \
+    "CREATE ROLE postgres WITH LOGIN SUPERUSER PASSWORD 'postgres';" 2>/dev/null || true
+
 MIGRATIONS_DIR="$INFRA_DIR/packages/db/migrations"
 log "  Running goose migrations from $MIGRATIONS_DIR..."
-goose -dir "$MIGRATIONS_DIR" postgres "$DB_URL" up
+goose -dir "$MIGRATIONS_DIR" -table "_migrations" postgres "$DB_URL" up
 
 log "  Seeding tier + team..."
 PGPASSWORD=$DB_PASS psql -h localhost -U $DB_USER -d $DB_NAME -c "
