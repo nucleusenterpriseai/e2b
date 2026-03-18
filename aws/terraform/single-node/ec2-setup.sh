@@ -596,6 +596,11 @@ done
 # ── 12. Build Templates ───────────────────────────────────────────────
 log "Step 12/13: Building templates..."
 
+# Stop orchestrator — create-build needs exclusive access to proxy/firewall ports
+log "  Stopping orchestrator for template builds..."
+systemctl stop e2b-orchestrator 2>/dev/null || true
+sleep 2
+
 # Pull base image
 docker pull e2bdev/base:latest 2>/dev/null || log "  WARNING: Could not pull e2bdev/base:latest"
 
@@ -603,7 +608,7 @@ docker pull e2bdev/base:latest 2>/dev/null || log "  WARNING: Could not pull e2b
 BASE_BUILD_ID="bb000000-0000-0000-0000-000000000001"
 docker tag e2bdev/base:latest "base:${BASE_BUILD_ID}"
 
-# Run create-build for base
+# Run create-build for base (orchestrator is stopped, ports are free)
 log "  Building base template..."
 if bash -c "set -a; source /opt/e2b/orchestrator.env; set +a; \
     /usr/local/bin/create-build \
@@ -612,7 +617,8 @@ if bash -c "set -a; source /opt/e2b/orchestrator.env; set +a; \
     -memory 512 -disk 512 -vcpu 2 \
     -kernel $KERNEL_VERSION \
     -firecracker ${FC_VERSION}_${FC_COMMIT} \
-    -v" 2>&1 | tail -20; then
+    -timeout 15 \
+    -v" 2>&1 | tail -30; then
     log "  Base template build succeeded — marking as ready and updating assignment"
     PGPASSWORD=$DB_PASS psql -h localhost -U $DB_USER -d $DB_NAME -c "
         UPDATE env_builds SET status='uploaded', status_group='ready', updated_at=now() WHERE id='${BASE_BUILD_ID}';
@@ -665,7 +671,8 @@ if [ -f "$DESKTOP_DOCKERFILE" ]; then
         -memory 512 -disk 7168 -vcpu 2 \
         -kernel $KERNEL_VERSION \
         -firecracker ${FC_VERSION}_${FC_COMMIT} \
-        -v" 2>&1 | tail -20; then
+        -timeout 15 \
+        -v" 2>&1 | tail -30; then
         log "  Desktop template build succeeded — marking as ready and updating assignment"
         PGPASSWORD=$DB_PASS psql -h localhost -U $DB_USER -d $DB_NAME -c "
             UPDATE env_builds SET status='uploaded', status_group='ready', updated_at=now() WHERE id='${DESKTOP_BUILD_ID}';
@@ -679,6 +686,16 @@ if [ -f "$DESKTOP_DOCKERFILE" ]; then
     fi
 else
     log "  Skipping desktop template (no Dockerfile found at $DESKTOP_DOCKERFILE)"
+fi
+
+# Restart orchestrator after template builds
+log "  Restarting orchestrator after template builds..."
+systemctl start e2b-orchestrator
+sleep 5
+if systemctl is-active --quiet e2b-orchestrator; then
+    log "  Orchestrator restarted"
+else
+    log "  WARNING: Orchestrator failed to restart after template builds"
 fi
 
 # ── Write convenience scripts ──────────────────────────────────────────
