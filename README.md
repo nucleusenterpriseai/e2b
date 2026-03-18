@@ -37,13 +37,46 @@ Your App (Python/JS/curl)
 
 ## Quick Start
 
+### 1. Configure and deploy
+
 ```bash
 cd aws/terraform/single-node
-cp terraform.tfvars.example terraform.tfvars  # edit with your values
-terraform init && terraform apply
+cp terraform.tfvars.example terraform.tfvars
+```
+
+Edit `terraform.tfvars` — at minimum set:
+
+```hcl
+key_name       = "your-ec2-keypair"
+e2b_repo_url   = "https://github.com/your-org/e2b.git"
+e2b_repo_ref   = "main"
+infra_repo_url = "https://github.com/your-org/infra.git"
+infra_repo_ref = "feat/standard-firecracker-arm64"
 ```
 
 Then:
+
+```bash
+terraform init && terraform apply
+```
+
+Bootstrap takes ~20 minutes (stock Ubuntu). Watch progress:
+
+```bash
+ssh -i ~/.ssh/<key>.pem ubuntu@<ip> 'tail -f /var/log/e2b-setup.log'
+```
+
+### 2. Get your API key
+
+```bash
+ssh -i ~/.ssh/<key>.pem ubuntu@<ip> 'sudo cat /opt/e2b/api-key'
+```
+
+### 3. Use from your application
+
+```bash
+pip install e2b
+```
 
 ```python
 from e2b import Sandbox
@@ -108,33 +141,34 @@ Tested: 60 concurrent desktop sandboxes each running Firefox + screenshot — 60
 
 ```
 aws/terraform/single-node/     # Terraform deployment (start here)
-  ├── main.tf                   # EC2 instance, security group
-  ├── user-data.sh              # Boot script (AMI or fresh)
+  ├── main.tf                   # EC2 instance, security group, variables
+  ├── user-data.sh              # Boot script (AMI fast path or stock Ubuntu)
   ├── ec2-setup.sh              # Full platform setup (12 steps)
-  ├── README.md                 # Detailed usage guide
-  └── terraform.tfvars.example
+  ├── README.md                 # Detailed usage guide + troubleshooting
+  └── terraform.tfvars.example  # Example configuration
 
-aws/terraform/                  # Multi-node deployment (WIP)
-aws/packer/                     # AMI builder
-aws/db/                         # DB migrations + seed
-aws/nomad/                      # Nomad job definitions
+aws/packer/setup/              # AMI builder + systemd units
+  ├── e2b-orchestrator.service  # Orchestrator systemd unit
+  ├── e2b-api.service           # API systemd unit
+  ├── e2b-network.service       # Firecracker networking (iptables)
+  └── setup-firecracker-networking.sh
 
+aws/db/                         # API key generator
 templates/                      # Sandbox template Dockerfiles
-tests/                          # Integration + performance tests
-scripts/                        # Setup and build scripts
-documents/                      # Design docs
+infra/                          # E2B platform (git submodule)
 ```
 
 ## Documentation
 
-- **[Single-Node Deployment Guide](aws/terraform/single-node/README.md)** — full setup, SDK usage, REST API, auto-termination, HTTPS, k8s migration
+- **[Single-Node Deployment Guide](aws/terraform/single-node/README.md)** — full setup, SDK usage, REST API, auto-termination, HTTPS, troubleshooting
 - **[Desktop Template Dockerfile](templates/desktop.Dockerfile)** — browser automation template
 
 ## Requirements
 
-- AWS account with EC2 bare-metal access (c6g.metal or equivalent)
+- AWS account with EC2 bare-metal access (`c6g.metal` for ARM64, or `c5.metal` for x86)
 - Terraform >= 1.0
 - EC2 key pair in target region
+- A fork of this repo and [nucleusenterpriseai/infra](https://github.com/nucleusenterpriseai/infra) (or use ours directly)
 
 ## Upstream Fork
 
@@ -144,11 +178,14 @@ Our fork lives at [nucleusenterpriseai/infra](https://github.com/nucleusenterpri
 
 **Changes from upstream:**
 - Standard Firecracker v1.12.x support (upstream uses a custom fork)
-- ARM64 (Graviton) compatibility
+- ARM64 (Graviton) compatibility (arch-aware busybox via `fetch-busybox.sh`)
+- Configurable DNS nameserver (`E2B_DNS_NAMESERVER` env var)
 - UFFD write-protect auto-detection
+- Scoped iptables chains (`E2B-FORWARD`, `E2B-POSTROUTING`) — safe restart without breaking Docker
 - Scaling improvements (`MaxSandboxesPerNode`, `maxStartingInstances`)
 - ECR support for docker-reverse-proxy
 - Sandbox expiry loop fix
+- Proper systemd units with dependency ordering
 
 To sync upstream updates:
 

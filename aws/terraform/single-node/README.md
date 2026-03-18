@@ -480,11 +480,60 @@ sandbox.kill()
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `region` | `ap-southeast-1` | AWS region |
-| `instance_type` | `c6g.metal` | Must be bare-metal (KVM) |
-| `use_spot` | `true` | Use spot instance (70% cheaper) |
+| `instance_type` | `c6g.metal` | Must be bare-metal (KVM support) |
+| `use_spot` | `true` | Use spot instance (~70% cheaper) |
 | `volume_size` | `200` | EBS volume in GB |
-| `ami_override` | `""` | Pre-built AMI ID (empty = fresh setup) |
-| `key_name` | — | EC2 key pair name |
+| `key_name` | — | EC2 key pair name (required) |
+| `ami_override` | `""` | Pre-built AMI ID. Empty = stock Ubuntu full setup (~20 min) |
+| `e2b_repo_url` | `""` | Git URL of your e2b fork (required for stock Ubuntu) |
+| `e2b_repo_ref` | `""` | Branch or tag to clone (commit SHAs not supported) |
+| `infra_repo_url` | `https://github.com/e2b-dev/infra.git` | Git URL of the infra repo fork |
+| `infra_repo_ref` | `main` | Branch or tag of infra repo |
+| `kernel_url` | `""` | HTTPS URL for kernel binary. Empty = downloads from GitHub release |
+| `fc_version` | `v1.12.1` | Firecracker version |
+| `fc_commit` | `a41d3fb` | Firecracker commit hash |
+| `kernel_version` | `vmlinux-6.1.158` | Kernel version identifier |
+| `go_version` | `1.25.4` | Go toolchain version |
+
+### Minimal terraform.tfvars for stock Ubuntu deploy
+
+```hcl
+region        = "ap-southeast-1"
+key_name      = "your-ec2-keypair"
+instance_type = "c6g.metal"
+use_spot      = true
+volume_size   = 200
+ami_override  = ""
+
+# Required for stock Ubuntu — these repos contain the setup scripts and platform code
+e2b_repo_url   = "https://github.com/your-org/e2b.git"
+e2b_repo_ref   = "main"
+infra_repo_url = "https://github.com/your-org/infra.git"
+infra_repo_ref = "feat/standard-firecracker-arm64"
+```
+
+> **Note**: Changing any of these variables triggers instance replacement (`user_data_replace_on_change = true`).
+
+---
+
+## What Bootstrap Does (12 steps)
+
+The stock Ubuntu setup (`ec2-setup.sh`) runs automatically via user-data:
+
+1. Install system packages (git, build-essential, etc.)
+2. Install Docker
+3. Install Go
+4. Create data directories
+5. Configure HugePages
+6. Kernel tuning + install Firecracker networking helper
+7. Start Docker services (PostgreSQL, Redis, Docker Registry)
+8. Clone and build E2B infrastructure (orchestrator, API, envd, create-build)
+9. Download Firecracker binary and kernel
+10. Run database migrations + seed data + generate API key
+11. Start E2B services (orchestrator, API) via systemd
+12. Build base + desktop templates (stops orchestrator, runs create-build, restarts)
+
+Total time: ~20 minutes on c6g.metal.
 
 ---
 
@@ -497,6 +546,7 @@ ssh -i ~/.ssh/<key>.pem ubuntu@<ip>
 # View logs
 sudo tail -f /var/log/api.log
 sudo tail -f /var/log/orchestrator.log
+sudo tail -f /var/log/e2b-setup.log    # bootstrap log
 
 # Restart services
 sudo /opt/e2b/restart-services.sh
@@ -506,4 +556,78 @@ curl http://localhost:80/health
 
 # See API key
 sudo cat /opt/e2b/api-key
+
+# Service management
+sudo systemctl status e2b-orchestrator e2b-api e2b-network
+sudo journalctl -u e2b-orchestrator -f
+sudo journalctl -u e2b-api -f
+
+# Check template status
+sudo docker exec e2b-postgres psql -U e2b -d e2b \
+  -c "SELECT env_id, status, status_group FROM env_builds;"
 ```
+
+---
+
+## Troubleshooting
+
+### Bootstrap fails at step 11 (services)
+
+Check `/var/log/e2b-setup.log` for the exact error. Common causes:
+- **grep pipefail**: If no stale iptables rules exist on a fresh node, the cleanup `grep` returns exit 1 under `set -o pipefail`. This is fixed in current code.
+- **Missing systemd unit files**: The setup checks both `$E2B_HOME/aws/packer/setup/` and `$E2B_HOME/custom/aws/packer/setup/` for service files.
+
+### Template build fails with "context deadline exceeded"
+
+- The default build timeout is 5 minutes. The setup uses `-timeout 15`.
+- Check if the orchestrator is stopped before create-build runs — both bind the same ports.
+
+### Template build fails with "Kernel panic - error -8"
+
+The embedded busybox binary doesn't match the host architecture. The setup runs `infra/scripts/fetch-busybox.sh` to pull the correct arch binary before building.
+
+### Template build fails with "Unable to locate package"
+
+The TCP firewall proxy is intercepting build sandbox traffic. Verify the orchestrator is stopped during template builds (ec2-setup.sh stops it in step 12).
+
+### API health check fails after restart
+
+The API takes 15-20 seconds to initialize (cluster discovery, node sync). Wait and retry.
+
+### "failed to find sandbox for connection" in orchestrator.log
+
+The TCP firewall proxy received traffic from a sandbox that isn't registered in its map. This happens when the orchestrator and create-build run simultaneously (port conflict).
+
+### DNS not working inside sandboxes
+
+Check `/etc/resolv.conf` in the sandbox — it should contain `nameserver 8.8.8.8` (or the value of `E2B_DNS_NAMESERVER` env var). Verify the E2B iptables chains are active:
+
+```bash
+sudo iptables -L E2B-FORWARD -n
+sudo iptables -t nat -L E2B-POSTROUTING -n
+```
+
+---
+
+## Environment Variables
+
+### Orchestrator (`/opt/e2b/orchestrator.env`)
+
+| Variable | Description |
+|----------|-------------|
+| `NODE_ID` | Node identifier |
+| `POSTGRES_CONNECTION_STRING` | PostgreSQL connection URL |
+| `REDIS_URL` | Redis address |
+| `GRPC_PORT` | Orchestrator gRPC port (default: 5008) |
+| `PROXY_PORT` | Sandbox proxy port (default: 5007) |
+| `E2B_DNS_NAMESERVER` | DNS nameserver for sandboxes (default: 8.8.8.8) |
+| `STORAGE_PROVIDER` | `Local` or `GCS` |
+
+### API (`/opt/e2b/api.env`)
+
+| Variable | Description |
+|----------|-------------|
+| `API_PORT` | HTTP listen port (default: 3000, mapped to 80) |
+| `ORCHESTRATOR_ADDRESS` | Orchestrator gRPC address |
+| `ADMIN_TOKEN` | Admin API token |
+| `DEFAULT_KERNEL_VERSION` | Kernel version for new sandboxes |
