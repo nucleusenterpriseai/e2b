@@ -132,6 +132,18 @@ variable "go_version" {
   default     = "1.25.4"
 }
 
+variable "iam_instance_profile" {
+  description = "IAM instance profile name to attach (for SSM access, S3, etc). If empty, no profile attached."
+  type        = string
+  default     = ""
+}
+
+variable "eip_allocation_id" {
+  description = "Elastic IP allocation ID to attach. If empty, uses the instance's auto-assigned public IP."
+  type        = string
+  default     = ""
+}
+
 variable "infra_repo_url" {
   description = "Git URL of the e2b infra repo (use your fork with standard FC patches)"
   type        = string
@@ -268,9 +280,23 @@ resource "aws_instance" "e2b" {
 
   user_data_replace_on_change = true
 
+  iam_instance_profile = var.iam_instance_profile != "" ? var.iam_instance_profile : null
+
   tags = {
     Name = "e2b-${var.environment}-node"
   }
+}
+
+# ── Elastic IP association (stable IP across spot replacements) ──
+
+resource "aws_eip_association" "e2b" {
+  count         = var.eip_allocation_id != "" ? 1 : 0
+  instance_id   = aws_instance.e2b.id
+  allocation_id = var.eip_allocation_id
+}
+
+locals {
+  public_ip = var.eip_allocation_id != "" ? aws_eip_association.e2b[0].public_ip : aws_instance.e2b.public_ip
 }
 
 # ── Outputs ───────────────────────────────────────────────
@@ -280,11 +306,11 @@ output "instance_id" {
 }
 
 output "public_ip" {
-  value = aws_instance.e2b.public_ip
+  value = local.public_ip
 }
 
 output "ssh_command" {
-  value = "ssh -i ~/.ssh/${var.key_name}.pem ubuntu@${aws_instance.e2b.public_ip}"
+  value = "ssh -i ~/.ssh/${var.key_name}.pem ubuntu@${local.public_ip}"
 }
 
 output "ami_used" {
@@ -296,14 +322,14 @@ output "instance_type" {
 }
 
 output "api_url" {
-  value = "http://${aws_instance.e2b.public_ip}:80"
+  value = "http://${local.public_ip}:80"
 }
 
 output "sandbox_proxy_url" {
-  value = "http://${aws_instance.e2b.public_ip}:5007"
+  value = "http://${local.public_ip}:5007"
 }
 
 output "setup_log" {
   description = "View setup progress"
-  value       = "ssh -i ~/.ssh/${var.key_name}.pem ubuntu@${aws_instance.e2b.public_ip} 'tail -f /var/log/e2b-setup.log'"
+  value       = "ssh -i ~/.ssh/${var.key_name}.pem ubuntu@${local.public_ip} 'tail -f /var/log/e2b-setup.log'"
 }
